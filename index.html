@@ -4485,6 +4485,11 @@ iniciar();
   if (location.protocol !== "https:" && !local) return;
   var tinhaControle = !!navigator.serviceWorker.controller;
   var pediu = false, recarregou = false, registro = null, esperando = null;
+  // logo ao abrir, antes de a pessoa mexer em algo, a versão nova entra sozinha
+  var abriuEm = Date.now(), mexeu = false;
+  ["pointerdown", "keydown", "input"].forEach(function (t) {
+    window.addEventListener(t, function () { mexeu = true; }, { capture: true, once: true });
+  });
 
   // aviso único: entra na pilha de mensagens do app (#toasts) para não cobrir nenhuma
   function mostrar(texto, rotulo, acao) {
@@ -4525,6 +4530,22 @@ iniciar();
     });
   }
 
+  // versão nova pronta: ao abrir o app, troca sozinha; depois, pergunta (pode haver algo aberto)
+  function chegou(w) {
+    if (!w) return;
+    if (!mexeu && Date.now() - abriuEm < 20000) {
+      pediu = true;
+      mostrar("Atualizando o app…", "Atualizando…", function () {});
+      var b = document.querySelector("#pwa-nova .sim");
+      if (b) b.disabled = true;
+      w.postMessage({ tipo: "atualizar" });
+      // se não trocar em alguns segundos, volta a perguntar
+      setTimeout(function () { if (!recarregou) { pediu = false; avisar(w); } }, 8000);
+      return;
+    }
+    avisar(w);
+  }
+
   navigator.serviceWorker.addEventListener("controllerchange", function () {
     if (recarregou) return;
     if (pediu) return recarregar(); // esta aba pediu: recarrega uma vez
@@ -4536,12 +4557,12 @@ iniciar();
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("./sw.js", { scope: "./" }).then(function (reg) {
       registro = reg;
-      if (reg.waiting && navigator.serviceWorker.controller) avisar(reg.waiting);
+      if (reg.waiting && navigator.serviceWorker.controller) chegou(reg.waiting);
       reg.addEventListener("updatefound", function () {
         var w = reg.installing;
         if (!w) return;
         w.addEventListener("statechange", function () {
-          if (w.state === "installed" && navigator.serviceWorker.controller) avisar(w);
+          if (w.state === "installed" && navigator.serviceWorker.controller) chegou(w);
         });
       });
       // o app fica aberto por dias: procura versão nova ao voltar para ele

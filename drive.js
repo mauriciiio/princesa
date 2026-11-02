@@ -22,6 +22,19 @@
   const BASE_ESPERA = TESTE ? 5 : 1000; // base do backoff exponencial
   const PRAZO_REDE = Number(CFG.prazoRedeMs) > 0 ? Number(CFG.prazoRedeMs) : 30000; // prazo por chamada
   const prazoPara = (bytes) => PRAZO_REDE + (Number(bytes) || 0) / 40; // + ~40 KB/s para corpos grandes
+  // Chave de API (pública, restrita ao site): deixa quem tem um link ler a cópia trancada sem login
+  const API_KEY = typeof CFG.apiKey === "string" && /^[A-Za-z0-9_-]{10,}$/.test(CFG.apiKey.trim()) && !/COLE/.test(CFG.apiKey) ? CFG.apiKey.trim() : "";
+  const COL_COMP = "compartilhar"; // links e chaves (só no Drive do dono)
+  // Aberto por um link de compartilhamento? (#v=envelope.chave[.resourceKey])
+  const VISITA = (function () {
+    try {
+      let h = G.location && typeof G.location.hash === "string" ? G.location.hash : "";
+      if (!/^#v=/.test(h)) return null;
+      h = h.replace(/[.,;:!?)\]>'"\s]+$/, ""); // pontuação colada no fim da frase
+      const m = /^#v=([A-Za-z0-9_-]{8,128})\.([A-Za-z0-9_-]{43})(?:\.([A-Za-z0-9_-]{1,200}))?$/.exec(h);
+      return m ? { envelopeId: m[1], chave: m[2], rk: m[3] || "" } : { invalido: true };
+    } catch (e) { return null; }
+  })();
 
   const ESCOPO = "https://www.googleapis.com/auth/drive.file";
   // Leitor (família): só lê a pasta que o dono compartilhou. drive.file não enxerga
@@ -58,6 +71,12 @@
     loginNegado: "Você não permitiu o acesso ao Google Drive.",
     escopo: "O Google não deu acesso ao Drive. Tente de novo e permita o acesso aos arquivos.",
     local: "Não consegui guardar no aparelho. Tente de novo.",
+    semChaveApi: "Falta a chave de API do Google para os links de compartilhamento (veja o LEIA-ME, \"Links de compartilhamento\").",
+    semChaveApiVisita: "Este app ainda não está pronto para abrir links. Avise quem mandou o link.",
+    chaveApiErrada: "A chave de API do Google não está certa ou não aceita este site. Avise quem mandou o link.",
+    linkInvalido: "Este link está incompleto ou errado. Peça para mandarem de novo e abra o link inteiro.",
+    linkVencido: "Este link venceu. Peça um link novo para quem compartilhou.",
+    linkDesligado: "Este link foi desligado por quem compartilhou, ou ainda não está pronto. Peça um link novo.",
     semPastaLeitor: "Não achei nenhuma pasta “" + NOME_PASTA + "” compartilhada com esta conta. Peça para o dono do app compartilhar a pasta com o seu e-mail e toque em Tentar de novo.",
     somenteLeitura: "Você está só vendo os dados de outra pessoa: aqui não dá para mudar nada.",
     temDadosDono: "Este aparelho já tem os dados do dono. Para ver como leitor, primeiro use Sair e apagar deste aparelho."
@@ -106,8 +125,8 @@
 
   // Id deste aparelho (desempate do "último vence")
   const DISPOSITIVO = (function () {
-    let d = ls.ler(CHAVE.dispositivo);
-    if (!d) { d = aleatorio(12, ALFA_NUM); ls.gravar(CHAVE.dispositivo, d); }
+    let d = VISITA ? null : ls.ler(CHAVE.dispositivo);
+    if (!d) { d = aleatorio(12, ALFA_NUM); if (!VISITA) ls.gravar(CHAVE.dispositivo, d); }
     return d;
   })();
   const ABA = aleatorio(10, ALFA_NUM);
@@ -120,12 +139,12 @@
   // ignorados: ids de arquivos do Drive que não dá para usar (estragados que não deu para renomear)
   // resumo: o Google Doc "Resumo de saúde" {id, hash, nome, quando}
   const meta = { ultimoPull: null, ultimaSync: null, md5: {}, pastas: {}, anexos: {}, lixeira: [], ignorados: [], resumo: {} };
-  let token = lerToken();
+  let token = VISITA ? null : lerToken(); // quem abriu um link nunca usa o login guardado neste navegador
   let metodo = lerMetodo();
   // "dono" grava e sincroniza; "leitor" só lê a pasta que o dono compartilhou
   let papel = ls.ler(CHAVE.papel) === "leitor" ? "leitor" : "dono";
   // leitor nesta aba ou em outra (o localStorage é o mesmo): nunca grava
-  const leitorAgora = () => papel === "leitor" || ls.ler(CHAVE.papel) === "leitor";
+  const leitorAgora = () => !!VISITA || papel === "leitor" || ls.ler(CHAVE.papel) === "leitor";
   // login de leitor que voltou pelo redirecionamento: só vale depois de abrir o banco (iniciar)
   let leitorPendente = null;
   let erroAtual = null;
@@ -401,6 +420,7 @@
   // espera a primeira sincronização (até 8 s) para não piscar o "crie a ficha".
   let esperaInicial = null;
   function esperarInicio() {
+    if (VISITA) return primeiroPull;
     if (!esperaInicial) {
       esperaInicial = prontoPromessa.then(() => {
         if (!(CONFIGURADO && tokenValido() && meta.ultimoPull == null)) return;
@@ -570,6 +590,7 @@
   async function pegarBlob(id) {
     id = String(id || "");
     if (!ID_OK.test(id)) throw erro("fetch", "Arquivo não encontrado.");
+    if (VISITA) return blobDaVisita(id);
     await prontoPromessa;
     let rec = null;
     try { rec = await operar("blobs", "readonly", (s) => s.get(id)); } catch (e) { /* tenta o Drive */ }
@@ -1235,7 +1256,7 @@
   // conexões juntas) acabam usando o mesmo arquivo, o mais antigo de cada coleção.
   // Só os JSON de coleção têm appProperties.col (anexos têm aid, backups papel=backup).
   async function listarArquivosDados() {
-    const lista = await listarTudo("appProperties has {key='app' and value='prontuario'} and trashed=false", "id,name,md5Checksum,appProperties,createdTime,mimeType");
+    const lista = await listarTudo("appProperties has {key='app' and value='prontuario'} and trashed=false", "id,name,md5Checksum,appProperties,createdTime,mimeType,parents");
     const porCol = {};
     for (const f of lista) {
       const ap = f.appProperties || {};
@@ -1369,8 +1390,27 @@
     await gravarDocs(gravar);
   }
 
+  // Pasta só do dono (na raiz do Drive dele, nunca dentro da pasta do app, que pode ser
+  // compartilhada): guarda o arquivo com as chaves dos links de compartilhamento
+  async function pastaPrivada() {
+    const p = meta.pastas || {};
+    if (p.privada && await pastaViva(p.privada)) return p.privada;
+    const lista = await listarTudo("mimeType='" + PASTA_MIME + "' and appProperties has {key='app' and value='prontuario'} and appProperties has {key='papel' and value='privado'} and trashed=false", "id,createdTime");
+    const id = lista.length ? lista.sort(porIdade)[0].id : (await criarPasta(NOME_PASTA + " (chaves dos links, não compartilhe)", null, "privado")).id;
+    meta.pastas = Object.assign({}, meta.pastas, { privada: id });
+    await salvarMeta("pastas");
+    return id;
+  }
+
   async function sincronizarColecao(col, lista, dadosId) {
     let principal = lista[0] || null;
+    // chaves dos links: se estiver na pasta do app (que pode ser compartilhada), vai para a pasta privada
+    if (col === COL_COMP && principal && (principal.parents || []).includes(dadosId)) {
+      try {
+        const destino = await pastaPrivada();
+        await api("PATCH", "files/" + encodeURIComponent(principal.id), { query: { fields: "id", addParents: destino, removeParents: (principal.parents || []).join(",") }, json: {} });
+      } catch (e) { if (e.code === "login" || e.code === "offline") throw e; }
+    }
     const extras = lista.slice(1);
     let mudou = false;
 
@@ -1419,7 +1459,7 @@
         });
       } else {
         resp = await criarArquivo(
-          { nome: col + ".json", tipo: "application/json", pais: [dadosId], props: { app: "prontuario", col } },
+          { nome: col + ".json", tipo: "application/json", pais: [col === COL_COMP ? await pastaPrivada() : dadosId], props: { app: "prontuario", col } },
           new Blob([texto], { type: "application/json" })
         );
       }
@@ -1660,7 +1700,7 @@
   // Ids de anexo citados por algum registro vivo (ids de 22 caracteres aleatórios)
   function textoDosRegistros() {
     const partes = [];
-    for (const r of docs.values()) if (!r.apagado && r.dados) partes.push(JSON.stringify(r.dados));
+    for (const r of docs.values()) if (!r.apagado && r.dados && r.col !== COL_COMP) partes.push(JSON.stringify(r.dados));
     return partes.join("\n");
   }
 
@@ -1811,6 +1851,7 @@
     if (code === "offline" || code === "cota" || code === "sem_permissao" || code === "login") return erro(code, e.mensagem || MSG[code]);
     if (code === "drive") return erro("drive", e.mensagem || MSG.drive);
     if (code === "sem_pasta") return erro("sem_pasta", e.mensagem || MSG.semPastaLeitor);
+    if (code === "sem_chave" || code === "read_only") return erro(code, e.mensagem);
     return erro("drive", MSG.drive);
   }
 
@@ -2016,7 +2057,8 @@
       armazenamentoLocal: armazem.tipo,
       pastaId: (meta.pastas && meta.pastas.raiz) || null,
       puxouNestaSessao,
-      papel,
+      papel: VISITA ? "visitante" : papel,
+      visita: VISITA ? { dono: (visita && visita.dono) || null, nome: (visita && visita.nome) || null, expira: (visita && visita.expira) || null, publicadoEm: (visita && visita.publicadoEm) || null, carregando: !!carregandoVisita, pronto: !!visita } : null,
       dono: papel === "leitor" && meta.pastas && meta.pastas.dono ? String(meta.pastas.dono) : null
     };
   }
@@ -2261,11 +2303,538 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Links de compartilhamento ("vitrine"). O dono publica no Drive dele uma cópia
+  // TRANCADA (AES-GCM) dos dados e dos anexos, aberta só para "quem tem o link".
+  // Cada pessoa ganha o seu link: um "envelope" trancado com a chave do link, que
+  // guarda a chave dos dados. Sem o link, os arquivos públicos são só bytes sem
+  // sentido. Desligar um link apaga o envelope e troca a chave dos dados.
+  // Quem abre o link (visitante) lê pela chave de API, sem login, e só vê.
+  // ---------------------------------------------------------------------------
+  const ID_CHAVE = "chave";
+  const MIME_TRANCADO = "application/octet-stream";
+
+  const b64u = {
+    de(bytes) {
+      const u = new Uint8Array(bytes);
+      let s = "";
+      for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+      return G.btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    },
+    para(t) {
+      let x = String(t || "").replace(/-/g, "+").replace(/_/g, "/");
+      while (x.length % 4) x += "=";
+      const s = G.atob(x);
+      const u = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+      return u;
+    }
+  };
+  const utf8 = { cod: (s) => new TextEncoder().encode(s), dec: (b) => new TextDecoder().decode(b) };
+  const sutil = () => (G.crypto && G.crypto.subtle) || null;
+  function bytesAleatorios(n) { const u = new Uint8Array(n); G.crypto.getRandomValues(u); return u; }
+  const chaveAes = (bytes) => sutil().importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+
+  // formato: [1][iv de 12 bytes][texto cifrado + tag]
+  async function trancar(chave, dados) {
+    const iv = bytesAleatorios(12);
+    const c = new Uint8Array(await sutil().encrypt({ name: "AES-GCM", iv }, await chaveAes(chave), dados));
+    const out = new Uint8Array(13 + c.length);
+    out[0] = 1; out.set(iv, 1); out.set(c, 13);
+    return out;
+  }
+  async function destrancar(chave, bytes) {
+    const u = new Uint8Array(bytes);
+    if (u.length < 29 || u[0] !== 1) throw erro("link_invalido", MSG.linkInvalido);
+    try { return new Uint8Array(await sutil().decrypt({ name: "AES-GCM", iv: u.slice(1, 13) }, await chaveAes(chave), u.slice(13))); }
+    catch (e) { throw erro("link_invalido", MSG.linkInvalido); }
+  }
+  async function hashDe(texto) { return b64u.de(await sutil().digest("SHA-256", utf8.cod(texto))); }
+
+  // ---------------- lado do dono ----------------
+  // Regras de segurança (valem mesmo com queda no meio, várias abas e dois aparelhos):
+  //  - tudo o que mexe nos links passa pela mesma fila/trava da publicação;
+  //  - a troca da chave dos dados é decidida pelo estado gravado (link fora do ar que
+  //    conhecia a chave atual), nunca por uma marca que pode se perder;
+  //  - arquivos a tirar do ar ficam gravados em c.lixo antes de qualquer envio, e só
+  //    saem da lista quando o Google confirma que deixaram de ser públicos.
+  function docComp(id) {
+    const r = docs.get(chaveDoc(COL_COMP, id));
+    return r && !r.apagado && r.dados && typeof r.dados === "object" ? r.dados : null;
+  }
+  function todosLinks() {
+    return docsDaColecao(COL_COMP).filter((r) => !r.apagado && r.id !== ID_CHAVE && r.dados && typeof r.dados.chave === "string")
+      .map((r) => Object.assign({}, r.dados, { id: r.id }));
+  }
+  const linkVivo = (l) => !l.desligado;
+  const venceu = (l) => !!l.expira && Number.isFinite(Date.parse(l.expira)) && Date.parse(l.expira) <= agora();
+  async function gravarComp(id, dados) {
+    const antes = docComp(id);
+    if (antes && JSON.stringify(antes) === JSON.stringify(dados)) return; // nada mudou: não gera sincronização
+    await escreverLocal(COL_COMP, id, copia(dados), false);
+  }
+  // muda campos de um link relendo o que está gravado agora (outra parte pode ter mudado)
+  async function mudarLink(id, campos) {
+    const atual = docComp(id);
+    if (!atual) return null;
+    const novo = Object.assign({}, atual, campos);
+    await gravarComp(id, novo);
+    return novo;
+  }
+
+  function urlDoLink(l) {
+    if (!l || !l.envelopeId || !l.chave) return null;
+    const loc = G.location || {};
+    const base = String(CFG.siteUrl || ((loc.origin || "") + (loc.pathname || "/")));
+    return base + "#v=" + l.envelopeId + "." + l.chave + (l.envelopeRk ? "." + l.envelopeRk : "");
+  }
+
+  function infoLinks() {
+    const c = docComp(ID_CHAVE) || {};
+    return {
+      disponivel: !!API_KEY,
+      publicadoEm: typeof c.publicadoEm === "number" ? c.publicadoEm : null,
+      links: todosLinks().filter(linkVivo).map((l) => ({
+        id: l.id, nome: l.nome || "", criadoEm: l.criadoEm || null, expira: l.expira || null,
+        url: urlDoLink(l), publicado: !!l.envelopeId && l.envVersao === c.versao && !venceu(l), venceu: venceu(l)
+      })).sort((a, b) => String(b.criadoEm || "").localeCompare(String(a.criadoEm || "")))
+    };
+  }
+
+  // Tira o acesso público (e manda para a lixeira). true só quando o Google confirma.
+  async function despublicar(id) {
+    if (!id || !ID_OK.test(String(id))) return true;
+    try { await api("DELETE", "files/" + encId(id) + "/permissions/anyoneWithLink", { resposta: "bruta" }); }
+    catch (e) {
+      if (errosQueParam(e)) throw e;
+      if (e.code !== "nao_encontrado") return false; // tenta de novo na próxima publicação
+    }
+    try { await api("PATCH", "files/" + encId(id), { query: { fields: "id" }, json: { trashed: true } }); }
+    catch (e) { if (errosQueParam(e)) throw e; } // já não é público: a lixeira é só arrumação
+    return true;
+  }
+  // Todos os envelopes de um link (inclusive cópias que outro aparelho possa ter criado)
+  async function despublicarLink(l) {
+    const ids = new Set();
+    if (l.envelopeId) ids.add(l.envelopeId);
+    const lista = await listarTudo("appProperties has {key='link' and value='" + String(l.id).replace(/[^A-Za-z0-9_-]/g, "") + "'} and trashed=false", "id");
+    for (const f of lista) ids.add(f.id);
+    let ok = true;
+    for (const id of ids) if (!(await despublicar(id))) ok = false;
+    return ok;
+  }
+  async function limparLixo(c) {
+    if (!Array.isArray(c.lixo) || !c.lixo.length) return;
+    const resta = [];
+    for (const id of c.lixo) if (!(await despublicar(id))) resta.push(id);
+    c.lixo = resta;
+    await gravarComp(ID_CHAVE, c);
+  }
+
+  async function tornarPublico(id) {
+    await api("POST", "files/" + encId(id) + "/permissions", { query: { fields: "id" }, json: { type: "anyone", role: "reader", allowFileDiscovery: false } });
+    const f = await api("GET", "files/" + encId(id), { query: { fields: "id,resourceKey" } });
+    return f && typeof f.resourceKey === "string" ? f.resourceKey : "";
+  }
+
+  async function pastaVitrine(raiz, conhecida) {
+    if (conhecida && await pastaViva(conhecida)) return conhecida;
+    // foi para a lixeira: tenta trazer de volta (os links continuam com os mesmos endereços)
+    if (conhecida) {
+      try {
+        const f = await api("PATCH", "files/" + encId(conhecida), { query: { fields: "id,trashed,parents" }, json: { trashed: false } });
+        if (f && !f.trashed && (f.parents || []).includes(raiz)) return conhecida;
+      } catch (e) { if (errosQueParam(e)) throw e; }
+    }
+    const lista = await listarTudo("'" + raiz + "' in parents and mimeType='" + PASTA_MIME + "' and appProperties has {key='papel' and value='vitrine'} and trashed=false", "id,createdTime");
+    if (lista.length) return lista.sort(porIdade)[0].id;
+    return (await criarPasta("compartilhado por link", raiz, "vitrine")).id;
+  }
+
+  // Sobe bytes trancados: troca o conteúdo do arquivo que já existe ou cria outro
+  async function subirTrancado(nome, pasta, bytes, idExistente, extras) {
+    const blob = new Blob([bytes], { type: MIME_TRANCADO });
+    if (idExistente) {
+      try {
+        await api("PATCH", "files/" + encId(idExistente), {
+          upload: true, query: { uploadType: "media", fields: "id" },
+          corpo: blob, cabecalhos: { "Content-Type": MIME_TRANCADO }
+        });
+        return { id: idExistente, novo: false };
+      } catch (e) { if (e.code !== "nao_encontrado") throw e; }
+    }
+    const props = Object.assign({ app: "prontuario", papel: "vitrine" }, extras || {});
+    const r = await criarArquivo({ nome, tipo: MIME_TRANCADO, pais: [pasta], props }, blob);
+    if (!r || !r.id) throw erro("drive", MSG.drive);
+    return { id: r.id, novo: true };
+  }
+  // O arquivo existe, fora da lixeira e dentro da pasta dos links?
+  async function arquivoVivoEm(id, pasta) {
+    if (!id) return false;
+    try {
+      const f = await api("GET", "files/" + encId(id), { query: { fields: "id,trashed,parents" } });
+      return !!f && !f.trashed && (f.parents || []).includes(pasta);
+    } catch (e) { if (e.code === "nao_encontrado") return false; throw e; }
+  }
+
+  // Retrato dos dados (o que o visitante vê): todas as coleções, sem as chaves dos links
+  function montarRetrato() {
+    const cols = Object.create(null);
+    const nomes = Array.from(new Set(Array.from(docs.values()).map((r) => r.col))).filter((c) => c !== COL_COMP).sort();
+    for (const col of nomes) {
+      for (const r of docsDaColecao(col)) {
+        if (r.apagado || !r.dados) continue;
+        (cols[col] = cols[col] || Object.create(null))[r.id] = r.dados;
+      }
+    }
+    return cols;
+  }
+  function anexosDoRetrato(cols) {
+    const s = new Set();
+    for (const col of Object.keys(cols)) {
+      for (const id of Object.keys(cols[col])) {
+        const d = cols[col][id];
+        if (Array.isArray(d.arquivos)) for (const a of d.arquivos) if (a && typeof a.id === "string" && ID_OK.test(a.id)) s.add(a.id);
+        if (typeof d.fotoId === "string" && ID_OK.test(d.fotoId)) s.add(d.fotoId);
+      }
+    }
+    return Array.from(s).sort();
+  }
+  function anexosPublicos(mapa, ids) {
+    const pub = {};
+    for (const aid of ids) pub[aid] = { id: mapa[aid].id, rk: mapa[aid].rk || "", tipo: mapa[aid].tipo || "" };
+    return pub;
+  }
+
+  let filaVitrine = Promise.resolve();
+  // op.antes: mudança nos links feita DENTRO da fila (criar/desligar)
+  function publicarVitrine(opcoes) {
+    const fazer = () => publicarVitrineAgora(opcoes || {});
+    const locks = G.navigator && G.navigator.locks;
+    const p = filaVitrine.then(() => (locks && typeof locks.request === "function" ? locks.request("prontuario-vitrine", fazer) : fazer()));
+    filaVitrine = p.catch(() => {});
+    return p;
+  }
+
+  async function publicarVitrineAgora(op) {
+    if (leitorAgora()) throw erro("read_only", MSG.somenteLeitura);
+    if (!API_KEY) throw erro("sem_chave", MSG.semChaveApi);
+    if (!CONFIGURADO || !tokenValido()) throw erro("login", "Conecte o Google Drive primeiro.");
+    if (!sutil()) throw erro("drive", "Este navegador não consegue trancar os dados. Use o Chrome, o Edge ou o Safari atualizados.");
+    try {
+      await prontoPromessa;
+      if (typeof op.antes === "function") await op.antes();
+      const c = Object.assign({ versao: 0, anexos: {}, lixo: [] }, copia(docComp(ID_CHAVE) || {}));
+      if (!c.anexos || typeof c.anexos !== "object") c.anexos = {};
+      if (!Array.isArray(c.lixo)) c.lixo = [];
+      c.versao = Number(c.versao) || 0;
+
+      // outro aparelho do dono está publicando: espera ele terminar (até 10 min)
+      if (c.publicando && c.publicando.disp !== DISPOSITIVO && agora() - (Number(c.publicando.desde) || 0) < 600000) {
+        return { publicadoEm: c.publicadoEm || null, links: todosLinks().filter(linkVivo).length, igual: true, ocupado: true };
+      }
+
+      const todos = todosLinks();
+      const maxEnv = todos.reduce((m, l) => Math.max(m, Number(l.envVersao) || 0), 0);
+      const perdeu = maxEnv > c.versao;                                           // a chave que os links usam se perdeu na mescla
+      const foraComChave = (l) => (!linkVivo(l) || venceu(l)) && !!c.dk && Number(l.envVersao) === c.versao;
+      const pendenteFora = (l) => !linkVivo(l) && !!l.envelopeId && !l.envelopeApagado;
+      const vivosJa = todos.filter((l) => linkVivo(l) && !venceu(l));
+
+      // caminho rápido, sem rede: nada mudou desde a última publicação
+      if (!op.forcar && !op.trocarChave && !perdeu && !c.publicando && !c.lixo.length && c.dk && c.dadosId && vivosJa.length &&
+          !todos.some((l) => foraComChave(l) || pendenteFora(l) || (linkVivo(l) && venceu(l))) &&
+          vivosJa.every((l) => l.envelopeId && Number(l.envVersao) === c.versao && l.envDados === c.dadosId)) {
+        const cols = montarRetrato();
+        const citados = anexosDoRetrato(cols);
+        const ids = Object.keys(c.anexos).sort();
+        if (citados.length === ids.length && citados.every((aid, i) => aid === ids[i]) &&
+            await hashDe(JSON.stringify({ v: c.versao, cols, anexos: anexosPublicos(c.anexos, ids) })) === c.publicadoHash) {
+          return { publicadoEm: c.publicadoEm || null, links: vivosJa.length, igual: true };
+        }
+      }
+      // nunca houve link e não há nada no ar
+      if (!todos.length && !c.dadosId && !Object.keys(c.anexos).length && !c.lixo.length) {
+        return { publicadoEm: null, links: 0, igual: true };
+      }
+
+      // ---- caminho completo ----
+      c.publicando = { disp: DISPOSITIVO, desde: agora() };
+      await gravarComp(ID_CHAVE, c);
+
+      // 1) vencidos saem (gravado: a troca de chave abaixo não depende de memória)
+      for (const l of todos) if (linkVivo(l) && venceu(l)) await mudarLink(l.id, { desligado: agora(), motivo: "venceu" });
+      // 2) envelopes de links desligados saem do ar (só marca quando o Google confirma)
+      for (const l of todosLinks()) {
+        if (pendenteFora(l) && await despublicarLink(l)) await mudarLink(l.id, { envelopeApagado: true });
+      }
+
+      const pastas = await garantirPastas();
+      const pastaAntes = c.pastaId || null;
+      c.pastaId = await pastaVitrine(pastas.raiz, c.pastaId);
+      const pastaMudou = !!pastaAntes && pastaAntes !== c.pastaId;
+      const vivos = todosLinks().filter(linkVivo);
+
+      // 3) nenhum link: nada fica no ar
+      if (!vivos.length) {
+        c.lixo = c.lixo.concat([c.dadosId], Object.keys(c.anexos).map((aid) => c.anexos[aid] && c.anexos[aid].id)).filter(Boolean);
+        c.dk = null; c.dadosId = null; c.dadosRk = ""; c.anexos = {}; c.publicadoHash = null;
+        await gravarComp(ID_CHAVE, c);
+        await limparLixo(c);
+        delete c.publicando;
+        await gravarComp(ID_CHAVE, c);
+        atualizarEstado();
+        return { publicadoEm: null, links: 0 };
+      }
+
+      // 4) chave nova: quando não há, quando um link fora do ar conhecia a atual, quando a chave
+      //    se perdeu, quando a cópia dos dados sumiu ou quando a pasta dos links mudou
+      const dadosMorto = !!c.dk && !!c.dadosId && !(await arquivoVivoEm(c.dadosId, c.pastaId));
+      const trocar = !c.dk || !!op.trocarChave || perdeu || pastaMudou || dadosMorto || todosLinks().some(foraComChave);
+      if (trocar) {
+        c.lixo = c.lixo.concat([c.dadosId], Object.keys(c.anexos).map((aid) => c.anexos[aid] && c.anexos[aid].id)).filter(Boolean);
+        c.dk = b64u.de(bytesAleatorios(32));
+        c.versao = Math.max(c.versao, maxEnv) + 1;
+        c.dadosId = null; c.dadosRk = ""; c.anexos = {}; c.publicadoHash = null;
+      }
+      // varredura: arquivo da pasta dos links que ninguém usa sai do ar (sobras de quedas ou de dois
+      // aparelhos). Só os com mais de 1 hora: um link novo do outro aparelho pode ainda não ter chegado aqui.
+      const emUso = new Set([c.dadosId].concat(Object.keys(c.anexos).map((aid) => c.anexos[aid] && c.anexos[aid].id),
+        todosLinks().filter(linkVivo).map((l) => l.envelopeId)).filter(Boolean));
+      for (const f of await listarTudo("'" + c.pastaId + "' in parents and trashed=false", "id,createdTime")) {
+        const idade = agora() - (Date.parse(f.createdTime || "") || agora());
+        if (!emUso.has(f.id) && !c.lixo.includes(f.id) && idade > 3600e3) c.lixo.push(f.id);
+      }
+      await gravarComp(ID_CHAVE, c); // a troca e o lixo ficam gravados antes de qualquer envio
+      await limparLixo(c);
+      const dk = b64u.para(c.dk);
+
+      // 5) anexos citados: sobem trancados (só os que faltam); os que saíram vão para o lixo
+      const cols = montarRetrato();
+      const citados = anexosDoRetrato(cols);
+      for (const aid of citados) {
+        if (c.anexos[aid] && c.anexos[aid].id) continue;
+        let blob;
+        try { blob = await pegarBlob(aid); }
+        catch (e) { if (!tokenValido() || (G.navigator && G.navigator.onLine === false)) throw erro("offline", MSG.offline); continue; } // anexo que sumiu: fica sem
+        const t = await trancar(dk, new Uint8Array(await blob.arrayBuffer()));
+        const r = await subirTrancado("anexo-" + aleatorio(12, ALFA_NUM) + ".bin", c.pastaId, t, null);
+        const rk = await tornarPublico(r.id);
+        c.anexos = Object.assign({}, c.anexos, { [aid]: { id: r.id, rk, tipo: String(blob.type || "").slice(0, 60) } });
+        await gravarComp(ID_CHAVE, c); // progresso: se cair no meio, não sobe de novo
+      }
+      const ficam = citados.filter((aid) => c.anexos[aid]);
+      const saem = Object.keys(c.anexos).filter((aid) => !ficam.includes(aid));
+      if (saem.length) {
+        c.lixo = c.lixo.concat(saem.map((aid) => c.anexos[aid] && c.anexos[aid].id).filter(Boolean));
+        const resto = {};
+        for (const aid of ficam) resto[aid] = c.anexos[aid];
+        c.anexos = resto;
+        await gravarComp(ID_CHAVE, c);
+      }
+
+      // 6) dados: só sobem se mudaram
+      const pub = anexosPublicos(c.anexos, ficam);
+      const hash = await hashDe(JSON.stringify({ v: c.versao, cols, anexos: pub }));
+      if (!c.dadosId || c.publicadoHash !== hash || op.forcar) {
+        const pacote = { app: "prontuario", tipo: "vitrine", v: 1, versao: c.versao, publicadoEm: agora(), dono: ls.ler(CHAVE.nome) || "", cols, anexos: pub };
+        const t = await trancar(dk, utf8.cod(JSON.stringify(pacote)));
+        const r = await subirTrancado("dados.bin", c.pastaId, t, c.dadosId);
+        if (r.novo || !c.dadosId) c.dadosRk = await tornarPublico(r.id);
+        c.dadosId = r.id;
+        c.publicadoHash = hash;
+        c.publicadoEm = pacote.publicadoEm;
+        await gravarComp(ID_CHAVE, c);
+      }
+
+      // 7) envelopes: um por link vivo, relendo o link na hora (pode ter sido desligado agora)
+      for (const l0 of vivos) {
+        const l = docComp(l0.id);
+        if (!l || l.desligado || venceu(l)) continue;
+        if (l.envelopeId && Number(l.envVersao) === c.versao && l.envDados === c.dadosId) continue;
+        const env = { v: 1, dk: c.dk, dadosId: c.dadosId, dadosRk: c.dadosRk || "", nome: l.nome || "", expira: l.expira || null };
+        const t = await trancar(b64u.para(l.chave), utf8.cod(JSON.stringify(env)));
+        // pasta dos links trocada: o envelope antigo está na lixeira, então cria outro (o link muda)
+        const r = await subirTrancado("link-" + aleatorio(8, ALFA_NUM) + ".bin", c.pastaId, t, pastaMudou ? null : (l.envelopeId || null), { link: l0.id });
+        let rk = l.envelopeRk || "";
+        if (r.novo) rk = await tornarPublico(r.id);
+        const agoraLink = docComp(l0.id);
+        if (!agoraLink || agoraLink.desligado) { await despublicar(r.id); continue; } // desligado enquanto subia
+        await mudarLink(l0.id, { envelopeId: r.id, envelopeRk: rk, envVersao: c.versao, envDados: c.dadosId });
+      }
+      delete c.publicando;
+      await gravarComp(ID_CHAVE, c);
+      atualizarEstado();
+      return { publicadoEm: c.publicadoEm || null, links: vivos.length };
+    } catch (e) {
+      throw traduzirErro(e) || erro("login", MSG.login);
+    }
+  }
+
+  async function criarLink(opcoes) {
+    if (leitorAgora()) throw erro("read_only", MSG.somenteLeitura);
+    if (!API_KEY) throw erro("sem_chave", MSG.semChaveApi);
+    if (!CONFIGURADO || !tokenValido()) throw erro("login", "Conecte o Google Drive primeiro.");
+    await prontoPromessa;
+    const nome = String((opcoes && opcoes.nome) || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 60) || "Link";
+    const dias = Number(opcoes && opcoes.dias);
+    const expira = dias > 0 && dias <= 3650 ? new Date(agora() + dias * 864e5).toISOString() : null;
+    const id = novoIdDoc();
+    const dados = { nome, criadoEm: new Date(agora()).toISOString(), expira, chave: b64u.de(bytesAleatorios(32)) };
+    let falha = null;
+    try { await publicarVitrine({ antes: () => gravarComp(id, dados) }); } catch (e) { falha = e; }
+    const l = todosLinks().find((x) => x.id === id);
+    if (!l) throw falha || erro("drive", MSG.drive); // nem chegou a ser criado
+    // criado: se a publicação falhou, ele fica pronto na próxima (o app avisa)
+    return { id, url: urlDoLink(l), erro: falha ? { code: falha.code, mensagem: falha.mensagem } : null };
+  }
+
+  async function desligarLink(id) {
+    if (leitorAgora()) throw erro("read_only", MSG.somenteLeitura);
+    await prontoPromessa;
+    if (!todosLinks().some((x) => x.id === id)) return { desligado: false };
+    const marcar = async () => {
+      const atual = docComp(id);
+      if (atual && !atual.desligado) await gravarComp(id, Object.assign({}, atual, { desligado: agora(), motivo: "dono" }));
+    };
+    if (API_KEY && CONFIGURADO && tokenValido()) {
+      let falha = null;
+      try { await publicarVitrine({ antes: marcar }); } catch (e) { falha = e; }
+      if (!(docComp(id) || {}).desligado) await marcar();
+      const d = docComp(id) || {};
+      return { desligado: true, pendente: !!(d.envelopeId && !d.envelopeApagado), erro: falha ? { code: falha.code, mensagem: falha.mensagem } : null };
+    }
+    await marcar();
+    const d = docComp(id) || {};
+    return { desligado: true, pendente: !!(d.envelopeId && !d.envelopeApagado) };
+  }
+
+  // ---------------- lado do visitante (quem abriu o link) ----------------
+  let visita = null;          // { dk, anexos, dono, publicadoEm, nome, expira }
+  let carregandoVisita = null;
+  const blobsVisita = new Map();
+
+  async function baixarPublico(id, rk) {
+    if (!API_KEY) throw erro("sem_chave", MSG.semChaveApiVisita);
+    if (!ID_OK.test(String(id || ""))) throw erro("link_invalido", MSG.linkInvalido);
+    const url = API + "/drive/v3/files/" + encId(id) + "?alt=media&key=" + encodeURIComponent(API_KEY);
+    const cab = rk ? { "X-Goog-Drive-Resource-Keys": id + "/" + rk } : {};
+    const r = await comPrazo(prazoPara(MAX_ANEXO), async (signal) => {
+      let resp;
+      try { resp = await G.fetch(url, { headers: cab, signal, cache: "no-store", credentials: "omit" }); }
+      catch (e) { throw erro("offline", MSG.offline); }
+      if (resp.ok) {
+        try { return { bytes: new Uint8Array(await resp.arrayBuffer()) }; } catch (e) { throw erro("offline", MSG.offline); }
+      }
+      return { status: resp.status, info: await lerErro(resp) };
+    });
+    if (r.bytes) return r.bytes;
+    const motivo = String(r.info.motivo || "") + " " + String(r.info.mensagem || "");
+    if (/rate|quota|limit/i.test(motivo) || r.status === 429 || r.status >= 500) throw erro("drive", MSG.drive);
+    if (/key|referer|API_KEY|apiKey/i.test(motivo)) throw erro("chave_api", MSG.chaveApiErrada);
+    if (r.status === 404 || r.status === 403 || r.status === 401) throw erro("link_desligado", MSG.linkDesligado);
+    throw erro("drive", MSG.drive);
+  }
+
+  async function lerEnvelope() {
+    const env = JSON.parse(utf8.dec(await destrancar(b64u.para(VISITA.chave), await baixarPublico(VISITA.envelopeId, VISITA.rk))));
+    if (!env || typeof env !== "object" || typeof env.dk !== "string" || !env.dadosId) throw erro("link_invalido", MSG.linkInvalido);
+    if (env.expira && Number.isFinite(Date.parse(env.expira)) && Date.parse(env.expira) <= agora()) throw erro("link_vencido", MSG.linkVencido);
+    return env;
+  }
+
+  async function carregarVisitaAgora() {
+    if (VISITA.invalido) throw erro("link_invalido", MSG.linkInvalido);
+    let env = await lerEnvelope();
+    let bytes;
+    try { bytes = await baixarPublico(env.dadosId, env.dadosRk); }
+    catch (e) {
+      if (e.code !== "link_desligado") throw e;
+      env = await lerEnvelope(); // o dono acabou de trocar a chave: o envelope já aponta para a cópia nova
+      bytes = await baixarPublico(env.dadosId, env.dadosRk);
+    }
+    const dk = b64u.para(env.dk);
+    const pacote = JSON.parse(utf8.dec(await destrancar(dk, bytes)));
+    if (!pacote || pacote.tipo !== "vitrine" || !pacote.cols || typeof pacote.cols !== "object") throw erro("link_invalido", MSG.linkInvalido);
+    const cols = new Set(Array.from(docs.values()).map((r) => r.col));
+    const novos = new Map();
+    for (const col of Object.keys(pacote.cols)) {
+      const lista = pacote.cols[col];
+      if (!lista || typeof lista !== "object") continue;
+      cols.add(col);
+      for (const id of Object.keys(lista)) {
+        const d = lista[id];
+        if (!d || typeof d !== "object") continue;
+        novos.set(chaveDoc(col, id), { col, id, dados: d, atualizado: Number(pacote.publicadoEm) || 0, apagado: false, dispositivo: "", sujo: 0 });
+      }
+    }
+    if (!visita || visita.dk.join(",") !== dk.join(",")) blobsVisita.clear(); // chave nova: os anexos mudaram
+    docs.clear();
+    for (const [k, v] of novos) docs.set(k, v);
+    visita = {
+      dk, anexos: pacote.anexos && typeof pacote.anexos === "object" ? pacote.anexos : {},
+      dono: String(pacote.dono || "").slice(0, 120), publicadoEm: Number(pacote.publicadoEm) || null,
+      nome: String(env.nome || "").slice(0, 60), expira: env.expira || null
+    };
+    for (const col of cols) emitirColecao(col);
+  }
+
+  function carregarVisita() {
+    if (!carregandoVisita) {
+      carregandoVisita = (async () => {
+        atualizarEstado();
+        try { await carregarVisitaAgora(); erroAtual = null; }
+        catch (e) {
+          erroAtual = e && e.code ? erro(e.code, e.mensagem || MSG.drive) : erro("drive", MSG.drive);
+          // link desligado ou vencido: o que já estava na tela sai
+          if (e && (e.code === "link_desligado" || e.code === "link_vencido" || e.code === "link_invalido")) {
+            const cols = new Set(Array.from(docs.values()).map((r) => r.col));
+            docs.clear(); visita = null; blobsVisita.clear();
+            for (const col of cols) emitirColecao(col);
+          }
+        } finally {
+          ultimaTentativa = agora();
+          resolverPrimeiroPull();
+        }
+      })().finally(() => { carregandoVisita = null; atualizarEstado(); });
+    }
+    return carregandoVisita;
+  }
+
+  async function blobDaVisita(id, deNovo) {
+    if (blobsVisita.has(id)) return blobsVisita.get(id);
+    if (!visita && carregandoVisita) await carregandoVisita;
+    const a = visita && Object.prototype.hasOwnProperty.call(visita.anexos, id) ? visita.anexos[id] : null;
+    if (!a || !a.id) {
+      if (!deNovo && visita) { await carregarVisita(); return blobDaVisita(id, true); }
+      throw erro("fetch", "Este arquivo não está no link.");
+    }
+    let bytes;
+    try { bytes = await destrancar(visita.dk, await baixarPublico(a.id, a.rk)); }
+    catch (e) {
+      // a chave dos dados mudou (outro link foi desligado): atualiza o link e tenta uma vez
+      if (!deNovo && e && e.code !== "offline") { await carregarVisita(); if (visita) return blobDaVisita(id, true); }
+      throw erro("fetch", e && e.code === "offline" ? MSG.offline : "Não consegui abrir o arquivo. Toque em Atualizar e tente de novo.");
+    }
+    const blob = new Blob([bytes], { type: TIPOS_OK.includes(a.tipo) ? a.tipo : "application/pdf" });
+    blobsVisita.set(id, blob);
+    return blob;
+  }
+
+  function ligarVisita() {
+    ouvir(G, "hashchange", () => { try { if (/^#v=/.test(G.location.hash)) G.location.reload(); } catch (e) { /* ok */ } });
+    // atualiza ao voltar para o app e a cada 5 min com a tela aberta
+    ouvir(G.document, "visibilitychange", () => { if (visivel() && agora() - ultimaTentativa > 60000) carregarVisita(); });
+    ouvir(G, "online", () => carregarVisita());
+    relogio = setInterval(() => { if (visivel() && agora() - ultimaTentativa >= 300000) carregarVisita(); }, 60000);
+    try { if (relogio && typeof relogio.unref === "function") relogio.unref(); } catch (e) { /* ok */ }
+  }
+
   const controle = {
     estado,
     on: aoEvento,
     conectar,
-    sincronizar: () => sincronizar(),
+    sincronizar: () => (VISITA ? carregarVisita() : sincronizar()),
     desconectar,
     definirMetodo,
     pastaUrl: () => (meta.pastas && meta.pastas.raiz ? "https://drive.google.com/drive/folders/" + meta.pastas.raiz : null),
@@ -2274,7 +2843,11 @@
     salvarResumo,
     resumo: infoResumo,
     linkAnexo,
-    apagarDoAparelho: esquecerAparelho
+    apagarDoAparelho: esquecerAparelho,
+    links: infoLinks,
+    criarLink,
+    desligarLink,
+    publicarLinks: (op) => publicarVitrine(op)
   };
 
   const capacidades = {
@@ -2295,6 +2868,7 @@
   }
 
   async function iniciar() {
+    if (VISITA) { usarMemoria(); return; } // quem abriu um link: nada fica guardado no aparelho
     try { await abrirArmazem(); } catch (e) { usarMemoria(); }
     try {
       await recarregarDoArmazem(true);
@@ -2317,6 +2891,7 @@
   }
 
   function depoisDeIniciar() {
+    if (VISITA) { atualizarEstado(); ligarVisita(); carregarVisita(); return; }
     atualizarEstado();
     pedirPersistencia();
     ligarCanal();
@@ -2335,7 +2910,7 @@
   }
 
   // Lê o retorno do login antes de tudo (antes do app rodar)
-  try { lerRetornoLogin(); } catch (e) { avisarConsole("retorno do login", e); }
+  if (!VISITA) { try { lerRetornoLogin(); } catch (e) { avisarConsole("retorno do login", e); } }
 
   prontoPromessa = iniciar();
   prontoPromessa.then(depoisDeIniciar);

@@ -677,6 +677,11 @@ table.cmp { border-collapse: separate; border-spacing: 0; width: 100%; font-size
 .drive-msg.err { color: var(--bad-ink); font-weight: 700; }
 .drive-sub { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--rule); }
 .drive-sub .lbl { display: block; }
+.lk-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.lk { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--r-ctl); }
+.lk-txt { display: grid; gap: 2px; min-width: 0; }
+.qr { display: grid; place-items: center; padding: 12px; background: #FFFFFF; border-radius: 14px; }
+.qr img { width: min(240px, 70vw); height: auto; image-rendering: pixelated; }
 .welcome { background: linear-gradient(135deg, var(--card) 55%, var(--accent-wash)); }
 .welcome .row-btns { flex: 1 1 100%; }
 @media (min-width: 620px) { .welcome .row-btns { flex: none; } }
@@ -1121,14 +1126,14 @@ function renderChrome() {
     '<button class="nav ' + (S.tab === a.k ? "is-on" : "") + '" data-act="tab" data-tab="' + a.k + '"' + (S.tab === a.k ? ' aria-current="page"' : "") + ">" + I[a.i] + "<span>" + esc(a.nome) + "</span></button>").join(""));
   setHTML($('[data-slot="sidefoot"]'),
     (podeEditar() ? '<button class="btn primary full" data-act="add-exam">' + I.plus + "Adicionar exame</button>" : "") +
-    (MODO_DRIVE ? syncHTML() + '<p class="fine">Tudo fica guardado neste aparelho e no seu Google Drive.</p>' : '<p class="fine">Tudo fica guardado na sua conta Claude.</p>'));
+    (MODO_DRIVE ? syncHTML() + '<p class="fine">' + (ehVisitante() ? "Você está vendo dados compartilhados por link. Nada fica guardado neste aparelho." : "Tudo fica guardado neste aparelho e no seu Google Drive.") + "</p>" : '<p class="fine">Tudo fica guardado na sua conta Claude.</p>'));
   setHTML($('[data-slot="tabbar"]'), ABAS.map(a =>
     '<button class="tab ' + (S.tab === a.k ? "is-on" : "") + '" data-act="tab" data-tab="' + a.k + '"' + (S.tab === a.k ? ' aria-current="page"' : "") + ">" + I[a.i] + "<span>" + esc(a.curto) + "</span></button>").join(""));
   const b = [];
   if (S.conn === "none") b.push('<div class="banner info">' + I.alert + porModo("<p><b>Abra este app pelo Claude.</b> Os exames ficam guardados na sua conta Claude e só aparecem quando o app é aberto por lá.</p>", "<p><b>Não consegui abrir os dados neste aparelho.</b> Feche o app e abra de novo. Se continuar, use outro navegador.</p>") + "</div>");
   if (S.lento && !MODO_DRIVE) b.push('<div class="banner warn">' + I.alert + "<p>Não consegui confirmar os dados com o servidor. Verifique a internet. O que aparece pode estar desatualizado.</p></div>");
   if (S.erroDados) b.push('<div class="banner warn">' + I.alert + "<p>" + (S.erroDados === "revoked" ? "Os dados não estão disponíveis agora." : "A conexão com os dados caiu.") + "</p>" + (S.erroDados !== "revoked" ? '<button class="btn sm ghost" data-act="reconectar">Reconectar</button>' : "") + "</div>");
-  if (CAP.db && !S.canWrite && S.erroDados !== "revoked" && !(ehLeitor() && !estadoDrive()?.pastaId)) b.push('<div class="banner info">' + I.eye + "<p>" + (ehLeitor() ? "Você está vendo os dados " + (donoLeitor() ? "de <b>" + esc(donoLeitor()) + "</b>" : "compartilhados com você") + ". Só dá para ver: nada aqui muda os dados." : "Modo leitura: você pode ver tudo, mas não alterar.") + "</p></div>");
+  if (CAP.db && !S.canWrite && S.erroDados !== "revoked" && !ehVisitante() && !(ehLeitor() && !estadoDrive()?.pastaId)) b.push('<div class="banner info">' + I.eye + "<p>" + (ehLeitor() ? "Você está vendo os dados " + (donoLeitor() ? "de <b>" + esc(donoLeitor()) + "</b>" : "compartilhados com você") + ". Só dá para ver: nada aqui muda os dados." : "Modo leitura: você pode ver tudo, mas não alterar.") + "</p></div>");
   if (MODO_DRIVE) b.push(...driveBanners());
   setHTML($('[data-slot="banners"]'), b.join(""));
 }
@@ -3947,6 +3952,13 @@ function msgErroDrive(er) {
 function syncInfo() {
   const e = estadoDrive();
   if (!e) return null;
+  if (e.papel === "visitante") {
+    const v = e.visita || {};
+    if (v.carregando) return { cls: "pend gira", i: "sync", txt: "Atualizando…" };
+    if (e.erro?.code === "offline" || navigator.onLine === false) return { cls: "warn", i: "cloudoff", txt: "Sem internet" };
+    if (e.erro) return { cls: "warn", i: "alert", txt: "Link com problema" };
+    return { cls: "ok", i: "cloudok", txt: v.publicadoEm ? "Atualizado " + haQuanto(v.publicadoEm) : "Compartilhado" };
+  }
   const n = ehNum(e.pendentes) ? e.pendentes : 0;
   const pend = plural(n, "alteração para enviar", "alterações para enviar");
   if (!e.configurado) return { cls: "warn", i: "cloudoff", txt: "Drive não configurado" };
@@ -3967,7 +3979,7 @@ function syncHTML() {
 }
 function boasVindasVisivel() {
   const e = estadoDrive();
-  return !!e && !e.contaConhecida && S.tab === "inicio" && !S.examId && carregou("exames") && !S.exames.length;
+  return !!e && e.papel !== "visitante" && !e.contaConhecida && S.tab === "inicio" && !S.examId && carregou("exames") && !S.exames.length;
 }
 function boasVindasHTML() {
   const e = estadoDrive();
@@ -3975,8 +3987,7 @@ function boasVindasHTML() {
     (e.configurado ? "Conecte seu Google Drive para guardar os exames, as vacinas e os PDFs com segurança na sua conta. Se você já usou o app com o Google Drive, é só conectar: tudo volta sozinho. Tem só um backup .zip? Use Restaurar backup."
       : "Falta configurar o acesso ao Google (veja o LEIA-ME). Enquanto isso, dá para restaurar um backup ou começar a usar: tudo fica guardado neste aparelho.") +
     '</p></div><div class="row-btns">' + (e.configurado ? '<button class="btn primary" data-act="drive-conectar">' + I.cloud + "Conectar Google Drive</button>" : "") +
-    (podeEditar() ? '<button class="btn ghost" data-act="restaurar">' + I.restore + "Restaurar backup</button>" : "") + "</div>" +
-    (e.configurado ? leitorConviteHTML() : "") + "</section>";
+    (podeEditar() ? '<button class="btn ghost" data-act="restaurar">' + I.restore + "Restaurar backup</button>" : "") + "</div></section>";
 }
 /* ---------- leitor: ver os dados que outra pessoa compartilhou (só leitura) ---------- */
 const ehLeitor = () => estadoDrive()?.papel === "leitor";
@@ -4020,6 +4031,13 @@ function conectarLeitor() {
 function driveBanners() {
   const e = estadoDrive(), b = [];
   if (!e) return b;
+  if (e.papel === "visitante") {
+    const v = e.visita || {};
+    if (e.erro) b.push('<div class="banner warn">' + I.alert + "<p>" + esc(e.erro.code === "offline" ? "Sem internet. Os dados aparecem quando a conexão voltar." : msgErroDrive(e.erro)) + "</p>" + (["offline", "drive"].includes(e.erro.code) ? '<button class="btn sm ghost" data-act="drive-sincronizar">Tentar de novo</button>' : "") + "</div>");
+    else if (!v.pronto) b.push('<div class="banner info">' + I.cloud + "<p>Abrindo os dados compartilhados…</p></div>");
+    else b.push('<div class="banner info">' + I.eye + "<p>" + (v.dono ? "<b>" + esc(v.dono) + "</b> compartilhou estes dados com você" : "Estes dados foram compartilhados com você") + ". Só dá para ver." + (v.expira ? " O link vale até " + esc(dataLocal(v.expira)) + "." : "") + "</p></div>");
+    return b;
+  }
   if (avisoApagado === "leitor") b.push('<div class="banner info">' + I.check + "<p><b>Pronto, você saiu do modo leitor.</b> Se este aparelho não for seu, saia também da sua conta Google (" + esc(SAIR_GOOGLE) + ")</p>" + '<button class="btn sm ghost" data-act="aviso-apagado-ok">Entendi</button></div>');
   else if (avisoApagado) b.push('<div class="banner info">' + I.check + "<p><b>Apagado deste aparelho.</b> Falta um passo: saia da sua conta Google aqui (" + esc(SAIR_GOOGLE) + ")</p>" + '<button class="btn sm ghost" data-act="aviso-apagado-ok">Entendi</button></div>');
   /* Safari do iPhone sem instalar: os dados daqui não aparecem no app instalado e o Safari pode apagá-los */
@@ -4116,7 +4134,7 @@ function montarResumo() {
   const resultado = v => ehNum(v?.valor) ? esc(fmtNum(v.valor) + (v.unidade ? " " + v.unidade : "")) : txt(v?.texto);
   const ref = v => { const t = refTxt(v); return t === "Sem referência" ? "" : esc(t.replace(/^Ref\. /, "")); };
   let h = "<h1>" + esc(nomeResumo()) + "</h1>";
-  h += '<p style="color:#6b6076">Feito e atualizado sozinho pelo app Prontuário. Não edite aqui: a próxima atualização apaga as mudanças. Para abrir os PDFs, a pessoa precisa ter acesso à pasta “' + esc(nomePasta()) + '” (compartilhe a pasta, não só este documento).</p>';
+  h += '<p style="color:#6b6076">Feito e atualizado sozinho pelo app Prontuário. Não edite aqui: a próxima atualização apaga as mudanças. Para ver tudo no app, com gráficos e PDFs, peça um link de compartilhamento ao dono.</p>';
   h += "<p><b>@@ATUALIZADO@@</b></p>";
 
   /* ficha */
@@ -4266,15 +4284,12 @@ function resumoCardHTML(e) {
   else if (RES.erro) st = "Não consegui atualizar o resumo agora: " + RES.erro;
   else if (info?.quando) st = "Resumo atualizado " + haQuanto(info.quando) + ".";
   else st = "O resumo é criado sozinho depois da próxima sincronização.";
-  return '<div class="drive-sub"><span class="lbl">Compartilhar com a família</span>' +
-    '<p class="fhint">O app mantém no seu Drive o documento “' + esc(nomeResumo()) + "”, com a ficha, os exames (com observações e PDFs), as vacinas, os remédios, o peso e os próximos cuidados. Ele se atualiza sozinho. " +
-    "Para alguém ver pelo Google Drive, sem o app e sem a sua senha, compartilhe a <b>pasta</b> “" + esc(nomePasta()) + "” com o e-mail da pessoa, como <b>Leitor</b>. " +
-    "Compartilhe a pasta, não só o documento: sem a pasta, os PDFs não abrem. Quem recebe a pasta vê tudo o que está nela, inclusive os backups do app.</p>" +
+  return '<div class="drive-sub"><span class="lbl">Resumo em documento</span>' +
+    '<p class="fhint">O app também mantém no seu Drive o documento “' + esc(nomeResumo()) + "”, com a ficha, os exames, as vacinas, os remédios e o peso. Ele se atualiza sozinho e é bom para imprimir.</p>" +
     '<p class="fhint">' + esc(st) + "</p>" +
     '<div class="row-btns">' + (info ? '<a class="btn ghost sm" href="' + esc(info.url) + '" target="_blank" rel="noopener noreferrer">' + I.ext + "Abrir resumo</a>" : "") +
-    (pasta ? '<a class="btn ghost sm" href="' + esc(pasta) + '" target="_blank" rel="noopener noreferrer">' + I.ext + "Abrir pasta para compartilhar</a>" : "") +
     (e.conectado ? '<button type="button" class="btn ghost sm" data-act="resumo-atualizar" data-fk="dr-res"' + (RES.rodando ? " disabled" : "") + ">" + I.sync + "Atualizar resumo</button>" : "") + "</div>" +
-    '<p class="fhint">Como compartilhar: toque em Abrir pasta para compartilhar. No celular, toque nos ⋮ lá em cima → Compartilhar. No computador, clique no nome da pasta lá em cima → Compartilhar. Escreva o e-mail da pessoa, troque “Editor” para “Leitor” e toque em Enviar. Se o Google disser que você precisa de acesso, troque para a sua conta Google no canto de cima.</p></div>';
+    "</div>";
 }
 function apagarAparelhoHTML() {
   return '<div class="drive-sub"><span class="lbl">Usou o celular ou computador de outra pessoa?</span>' +
@@ -4289,7 +4304,7 @@ async function apagarAparelho() {
   const sim = ehLeitor()
     ? await confirmar({
       titulo: "Sair do modo leitor?",
-      texto: "Isto apaga deste aparelho o que foi baixado e o login do app. Os dados continuam no Drive de quem compartilhou, e você pode entrar como leitor de novo quando quiser. Se este aparelho não for seu, saia também da sua conta Google: " + SAIR_GOOGLE,
+      texto: "Isto apaga deste aparelho o que foi baixado e o login do app. Os dados continuam no Drive de quem compartilhou. Para ver de novo, peça um link de compartilhamento para essa pessoa. Se este aparelho não for seu, saia também da sua conta Google: " + SAIR_GOOGLE,
       ok: "Sair do modo leitor", perigo: true,
     })
     : await confirmar({
@@ -4316,9 +4331,159 @@ const SAIR_GOOGLE = "numa aba anônima, feche todas as abas anônimas; se não, 
 /* depois de apagar e recarregar: lembra de sair da conta Google */
 let avisoApagado = false;
 try { const v = sessionStorage.getItem("prontuario-apagado"); if (v) { avisoApagado = v === "leitor" ? "leitor" : true; sessionStorage.removeItem("prontuario-apagado"); } } catch (e) { /* ok */ }
+/* ---------- links de compartilhamento ---------- */
+const ehVisitante = () => estadoDrive()?.papel === "visitante";
+function infoLinksDrive() {
+  try { const r = DRIVE?.links?.(); return r && Array.isArray(r.links) ? r : null; } catch (e) { return null; }
+}
+const dataLocal = t => { const d = new Date(t); return isNaN(d) ? "" : fmtData(iso(d)); };
+function linkSub(l) {
+  const p = [];
+  if (l.criadoEm) p.push("criado em " + dataLocal(l.criadoEm));
+  p.push(l.expira ? "vale até " + dataLocal(l.expira) : "sem validade");
+  if (!l.url) p.push(l.venceu ? "venceu" : "fica pronto quando a internet e o Google Drive estiverem ok");
+  else if (!l.publicado && !l.venceu) p.push("atualizando");
+  return p.join(" · ");
+}
+const LNK = { rodando: false, erro: null, timer: 0, tentarDepois: 0 };
+function linksCardHTML(e) {
+  const inf = infoLinksDrive();
+  if (!inf) return "";
+  let h = '<div class="drive-sub"><span class="lbl">Links de compartilhamento</span>' +
+    '<p class="fhint">Crie um link para cada pessoa (sua mãe, o veterinário). Quem abre vê tudo: exames, gráficos e PDFs, sem login e sem poder mudar nada. Você desliga cada link quando quiser.</p>';
+  if (!inf.disponivel) return h + '<p class="drive-msg err">Falta a chave de API do Google para os links funcionarem (veja o LEIA-ME, “Links de compartilhamento”).</p></div>';
+  h += inf.links.length ? '<ul class="lk-list">' + inf.links.map(l => '<li class="lk"><div class="lk-txt"><b>' + esc(l.nome || "Link") + '</b><span class="fhint">' + esc(linkSub(l)) + "</span></div>" +
+    '<div class="row-btns">' + (l.url && !l.venceu ? '<button type="button" class="btn ghost sm" data-act="link-ver" data-id="' + esc(l.id) + '" data-fk="lk-v-' + esc(l.id) + '">' + I.ext + "Ver link e QR code</button>" : "") +
+    '<button type="button" class="btn danger-ghost sm" data-act="link-desligar" data-id="' + esc(l.id) + '" data-fk="lk-d-' + esc(l.id) + '">Desligar</button></div></li>').join("") + "</ul>"
+    : '<p class="fhint">Nenhum link por enquanto.</p>';
+  if (LNK.rodando) h += '<p class="fhint">Atualizando os links…</p>';
+  else if (LNK.erro) h += '<p class="drive-msg err">' + esc(LNK.erro) + "</p>";
+  else if (inf.links.length && inf.publicadoEm) h += '<p class="fhint">Quem tem link vê os dados de ' + esc(haQuanto(inf.publicadoEm)) + ".</p>";
+  h += '<div class="row-btns"><button type="button" class="btn primary sm" data-act="link-novo" data-fk="lk-novo"' + (e.conectado ? "" : " disabled") + ">" + I.plus + "Criar link</button></div>";
+  if (!e.conectado) h += '<p class="fhint">Para criar ou atualizar links, toque em Sincronizar com o Google Drive.</p>';
+  return h + "</div>";
+}
+/* depois de cada sincronização: a cópia dos links acompanha os dados (sem mudança, nem chama a rede) */
+function agendarLinks() {
+  if (!DRIVE?.publicarLinks) return;
+  clearTimeout(LNK.timer);
+  LNK.timer = setTimeout(() => publicarLinksAuto(), 4000);
+}
+async function publicarLinksAuto() {
+  const e = estadoDrive(), inf = infoLinksDrive();
+  if (!inf || !inf.disponivel || LNK.rodando || !podeResumo(e) || Date.now() < LNK.tentarDepois) return;
+  LNK.rodando = true;
+  let mudou = false;
+  try { const r = await DRIVE.publicarLinks(); mudou = !r?.igual; LNK.erro = null; LNK.tentarDepois = 0; }
+  catch (er) { LNK.erro = "Não consegui atualizar os links agora: " + msgErroDrive(er); LNK.tentarDepois = Date.now() + 5 * 60000; mudou = true; }
+  finally { LNK.rodando = false; if (mudou) redesenharDriveCard(); }
+}
+function abrirNovoLink() {
+  if (!DRIVE?.criarLink) return;
+  const corpo = '<form class="form" novalidate>' +
+    '<div class="field"><label for="ln-nome">Para quem é o link?</label><input id="ln-nome" type="text" maxlength="60" placeholder="Ex.: Mãe, Dra. Bianca (Pet Love)" autocomplete="off"></div>' +
+    '<div class="field"><label for="ln-dias">Validade</label><select id="ln-dias"><option value="0">Sem validade (até você desligar)</option><option value="1">1 dia</option><option value="7">7 dias</option><option value="30">30 dias</option></select>' +
+    '<span class="fhint">Para o veterinário, 1 ou 7 dias costuma bastar. Para a família, sem validade. No fim do prazo o link deixa de abrir, e sai de vez do ar na próxima vez que você abrir o app.</span></div>' +
+    '<p class="fhint">Quem tiver o link vê tudo (exames, gráficos e PDFs), sem login e sem poder mudar nada. Mande só para essa pessoa: se ela passar adiante, quem receber também vê.</p>' +
+    '<p class="form-err" role="alert" hidden></p></form>';
+  const rodape = '<span class="spacer"></span><span class="busy-msg" data-slot="busy" aria-live="polite"></span><button type="button" class="btn ghost" data-f="fechar">Cancelar</button><button type="button" class="btn primary" data-f="criar">Criar link</button>';
+  const j = abrirJanela({ titulo: "Novo link de compartilhamento", tam: "sm", corpo, rodape, livre: false });
+  const F = { ocupado: false };
+  j.guarda = () => !F.ocupado;
+  j.sheet.querySelector("form").addEventListener("submit", ev => ev.preventDefault());
+  j.sheet.addEventListener("click", async ev => {
+    const b = ev.target.closest('[data-f="criar"]');
+    if (!b || F.ocupado) return;
+    esconderErro(j);
+    const nome = j.sheet.querySelector("#ln-nome").value.trim();
+    if (!nome) { mostrarErro(j, "Escreva para quem é o link (ex.: Mãe). Assim você sabe qual desligar depois."); return; }
+    ocupado(j, F, true, "Criando o link… (os PDFs sobem trancados, pode levar um pouco)");
+    LNK.rodando = true;
+    try {
+      const r = await DRIVE.criarLink({ nome, dias: Number(j.sheet.querySelector("#ln-dias").value) || 0 });
+      LNK.rodando = false;
+      if (!r?.erro) { LNK.erro = null; LNK.tentarDepois = 0; }
+      ocupado(j, F, false);
+      j.fechar(true);
+      redesenharDriveCard();
+      if (r?.url) abrirLinkPronto(nome, r.url, infoLinksDrive()?.links.find(x => x.id === r.id)?.expira || null);
+      else toast("Link para " + nome + " criado. Ele fica pronto quando a internet voltar: depois, toque em Ver link e QR code.");
+    } catch (er) {
+      LNK.rodando = false;
+      ocupado(j, F, false);
+      mostrarErro(j, msgErroDrive(er));
+    }
+  });
+  setTimeout(() => j.sheet.querySelector("#ln-nome")?.focus(), 60);
+}
+let qrP = null;
+function qrImg(url) {
+  if (!qrP) qrP = carregarScript(String(window.PRONTUARIO_CONFIG?.qrSrc || "./vendor/qrcode/qrcode.min.js")).catch(e => { qrP = null; throw e; });
+  return qrP.then(() => {
+    const q = window.qrcode(0, "M");
+    q.addData(url);
+    q.make();
+    return q.createImgTag(6, 12, "QR code do link");
+  });
+}
+async function copiarTexto(t) {
+  try { await navigator.clipboard.writeText(t); return true; } catch (e) { return false; }
+}
+function abrirLinkPronto(nome, url, expira) {
+  const corpo = "<p>Link de <b>" + esc(nome || "Link") + "</b>" + (expira ? " (vale até " + esc(dataLocal(expira)) + ")" : "") + ". Quem abrir vê tudo, sem login e sem poder mudar nada.</p>" +
+    '<div class="field"><label for="lk-url">Link</label><input id="lk-url" type="text" readonly value="' + esc(url) + '"></div>' +
+    '<div class="row-btns"><button type="button" class="btn primary sm" data-f="copiar">Copiar link</button>' +
+    (navigator.share ? '<button type="button" class="btn ghost sm" data-f="enviar">Enviar (WhatsApp, e-mail…)</button>' : "") + "</div>" +
+    '<p class="fhint">Pessoalmente (no veterinário, por exemplo): mostre este QR code para a pessoa apontar a câmera do celular.</p>' +
+    '<div class="qr" data-slot="qr">' + loadingHTML("Gerando o QR code…") + "</div>";
+  const j = abrirJanela({ titulo: "Link de compartilhamento", tam: "sm", corpo });
+  qrImg(url).then(h => { const el = j.sheet.querySelector('[data-slot="qr"]'); if (el) el.innerHTML = h; },
+    () => { const el = j.sheet.querySelector('[data-slot="qr"]'); if (el) el.innerHTML = '<p class="fhint">Não consegui gerar o QR code agora. Use Copiar link.</p>'; });
+  j.sheet.addEventListener("click", async ev => {
+    const b = ev.target.closest("[data-f]");
+    if (!b) return;
+    if (b.dataset.f === "copiar") {
+      if (await copiarTexto(url)) toast("Link copiado.");
+      else { const inp = j.sheet.querySelector("#lk-url"); inp.focus(); inp.select(); toast("O link está selecionado: copie com Ctrl+C ou com um toque longo."); }
+    } else if (b.dataset.f === "enviar") {
+      try { await navigator.share({ title: "Saúde " + dela(), text: "Exames e dados de saúde " + dela() + " (só para ver):", url }); } catch (e) { /* cancelou */ }
+    }
+  });
+}
+function mostrarLink(id) {
+  const l = infoLinksDrive()?.links.find(x => x.id === id);
+  if (l?.url) abrirLinkPronto(l.nome, l.url, l.expira);
+}
+async function desligarLinkUI(id) {
+  const l = infoLinksDrive()?.links.find(x => x.id === id);
+  if (!l || !DRIVE?.desligarLink) return;
+  const sim = await confirmar({ titulo: "Desligar o link de " + (l.nome || "Link") + "?", texto: "Quem tiver esse link deixa de ver os dados. Os outros links continuam funcionando. Seus dados não são apagados.", ok: "Desligar", perigo: true });
+  if (!sim) return;
+  LNK.rodando = true;
+  redesenharDriveCard();
+  try {
+    const r = await DRIVE.desligarLink(id);
+    toast(r?.pendente ? "Link desligado aqui. Ele sai do ar assim que houver internet e o Google Drive estiver conectado." : "Link desligado.");
+    if (!r?.erro) { LNK.erro = null; LNK.tentarDepois = 0; }
+  } catch (e) { toast(msgErroDrive(e), "err"); }
+  finally { LNK.rodando = false; }
+  redesenharDriveCard();
+}
+/* quem abriu um link */
+function visitanteCardHTML(e) {
+  const v = e.visita || {};
+  let h = '<p class="drive-msg">' + (v.dono ? "<b>" + esc(v.dono) + "</b> compartilhou estes dados com você" : "Estes dados foram compartilhados com você") + ". Só dá para ver: nada aqui muda os dados.</p>";
+  h += '<dl class="kv">' + (v.nome ? "<div><dt>Link</dt><dd>" + esc(v.nome) + "</dd></div>" : "") +
+    "<div><dt>Atualizado</dt><dd>" + esc(v.carregando ? "agora" : v.publicadoEm ? haQuanto(v.publicadoEm) : "—") + "</dd></div>" +
+    (v.expira ? "<div><dt>Vale até</dt><dd>" + esc(dataLocal(v.expira)) + "</dd></div>" : "") + "</dl>";
+  if (e.erro) h += '<p class="drive-msg' + (e.erro.code === "offline" ? "" : " err") + '">' + esc(msgErroDrive(e.erro)) + "</p>";
+  h += '<div class="row-btns"><button type="button" class="btn primary sm" data-act="drive-sincronizar" data-fk="dr-sync"' + (v.carregando ? " disabled" : "") + ">" + I.sync + (v.carregando ? "Atualizando…" : "Atualizar agora") + "</button></div>";
+  return h;
+}
 function driveCardHTML() {
   const e = estadoDrive();
   if (!e) return '<div class="drive-card"><p class="drive-msg">O Google Drive não está disponível nesta versão do app.</p></div>';
+  if (e.papel === "visitante") return '<div class="drive-card">' + visitanteCardHTML(e) + "</div>";
   if (!e.configurado) return '<div class="drive-card"><p class="drive-msg">Falta configurar o acesso ao Google. Veja o LEIA-ME.</p>' + instalacaoHTML() + "</div>";
   const n = ehNum(e.pendentes) ? e.pendentes : 0;
   let h = "";
@@ -4344,10 +4509,9 @@ function driveCardHTML() {
         : '<button type="button" class="btn primary sm" data-act="drive-conectar" data-fk="dr-con">' + I.cloud + "Sincronizar com o Google Drive</button>") +
       (pasta ? '<a class="btn ghost sm" href="' + esc(pasta) + '" target="_blank" rel="noopener noreferrer">' + I.ext + "Abrir pasta no Drive</a>" : "") +
       '<button type="button" class="btn danger-ghost sm" data-act="drive-desconectar" data-fk="dr-sair">Desconectar</button></div>';
-    h += resumoCardHTML(e);
+    h += linksCardHTML(e) + resumoCardHTML(e);
   }
-  /* aparelho sem dados próprios (ex.: conectou a conta errada): pode ver os de outra pessoa */
-  if (semDadosProprios() && COLS_RESUMO.every(carregou)) h += leitorConviteHTML();
+
   const m = e.metodo === "redirecionar" ? "redirecionar" : "janela";
   const chip = (k, txt) => '<button type="button" class="chipbtn" data-act="drive-metodo" data-m="' + k + '" data-fk="dr-m-' + k + '" aria-pressed="' + (m === k) + '">' + (m === k ? I.check : "") + esc(txt) + "</button>";
   h += '<div class="drive-sub"><span class="lbl">Como entrar no Google</span><div class="row-btns">' + chip("janela", "Janela") + chip("redirecionar", "Redirecionar") + "</div>" +
@@ -4382,7 +4546,7 @@ function sincronizarDrive() {
   Promise.resolve().then(() => DRIVE.sincronizar()).then(() => {
     atualizarDrive();
     const e = estadoDrive();
-    if (e && !e.erro && !e.precisaLogin) toast("Sincronizado com o Google Drive.");
+    if (e && !e.erro && !e.precisaLogin) toast(e.papel === "visitante" ? "Dados atualizados." : "Sincronizado com o Google Drive.");
   }, e => { atualizarDrive(); toast(msgErroDrive(e), "err"); });
   setTimeout(atualizarDrive, 50);
 }
@@ -4416,6 +4580,9 @@ Object.assign(ACOES, {
   "resumo-atualizar": () => atualizarResumo(true),
   "drive-apagar-aparelho": () => apagarAparelho(),
   "drive-leitor": () => conectarLeitor(),
+  "link-novo": () => abrirNovoLink(),
+  "link-ver": el => mostrarLink(el.dataset.id),
+  "link-desligar": el => desligarLinkUI(el.dataset.id),
   "aviso-apagado-ok": () => { avisoApagado = false; agendarRender(); },
 });
 function iniciarDrive() {
@@ -4429,6 +4596,7 @@ function iniciarDrive() {
       if (e?.papel === "leitor") S.canWrite = false;
       atualizarDrive();
       agendarResumo();
+      agendarLinks();
     });
   } catch (e) { /* sem avisos do Drive */ }
   /* "há 2 min" envelhece sozinho */

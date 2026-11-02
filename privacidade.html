@@ -45,15 +45,14 @@
   <p>O app pede ao Google apenas a permissão <code>drive.file</code>. Com ela, o app só enxerga
   os arquivos que ele mesmo criou. Ele não lê, não altera e não apaga nenhum outro arquivo do seu Drive.
   Os dados do Google não são vendidos, compartilhados nem usados para publicidade ou para treinar inteligência artificial.</p>
-  <p>No <strong>modo leitor</strong> (para a família ver os dados que o dono compartilhou), o app pede a permissão
-  <code>drive.readonly</code>, de leitura. Ela é usada só para ler a pasta “Prontuário da Princesa” compartilhada com a pessoa.
-  O app não lê outros arquivos, não muda nada e não guarda nada fora do próprio aparelho.
-  A pessoa pode tirar esse acesso quando quiser em myaccount.google.com/connections.</p>
-
-  <h2>Compartilhar com a família</h2>
-  <p>O app mantém na pasta “Prontuário da Princesa” um documento com o resumo de saúde do animal.
-  Se você compartilhar essa pasta com alguém, essa pessoa vê tudo o que está nela, inclusive os backups do app.
-  O app nunca compartilha nada sozinho: quem decide é você, pelo Google Drive.</p>
+  <h2>Links de compartilhamento</h2>
+  <p>O dono pode criar links para outras pessoas (família, veterinário) verem os dados, sem login e sem poder mudar nada.
+  Para isso, o app guarda no Drive do dono, na pasta “compartilhado por link”, uma cópia <strong>criptografada</strong>
+  (AES-GCM) dos dados e dos anexos, aberta só para quem tem o link. A chave para abrir vai dentro do próprio link
+  (na parte depois do “#”, que o navegador não envia a nenhum servidor). Sem o link, a cópia não pode ser lida.</p>
+  <p>Cada pessoa recebe o seu link, e o dono pode desligar cada um a qualquer momento. Quem abre um link não precisa
+  de conta, e nada fica guardado no aparelho dessa pessoa. O app não registra quem abriu nem quando.
+  O app nunca cria um link sozinho: quem decide é o dono.</p>
 
   <h2>Como apagar tudo</h2>
   <ul>

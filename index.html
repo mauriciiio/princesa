@@ -1128,7 +1128,7 @@ function renderChrome() {
   if (S.conn === "none") b.push('<div class="banner info">' + I.alert + porModo("<p><b>Abra este app pelo Claude.</b> Os exames ficam guardados na sua conta Claude e só aparecem quando o app é aberto por lá.</p>", "<p><b>Não consegui abrir os dados neste aparelho.</b> Feche o app e abra de novo. Se continuar, use outro navegador.</p>") + "</div>");
   if (S.lento && !MODO_DRIVE) b.push('<div class="banner warn">' + I.alert + "<p>Não consegui confirmar os dados com o servidor. Verifique a internet. O que aparece pode estar desatualizado.</p></div>");
   if (S.erroDados) b.push('<div class="banner warn">' + I.alert + "<p>" + (S.erroDados === "revoked" ? "Os dados não estão disponíveis agora." : "A conexão com os dados caiu.") + "</p>" + (S.erroDados !== "revoked" ? '<button class="btn sm ghost" data-act="reconectar">Reconectar</button>' : "") + "</div>");
-  if (CAP.db && !S.canWrite && S.erroDados !== "revoked") b.push('<div class="banner info">' + I.eye + "<p>Modo leitura: você pode ver tudo, mas não alterar.</p></div>");
+  if (CAP.db && !S.canWrite && S.erroDados !== "revoked" && !(ehLeitor() && !estadoDrive()?.pastaId)) b.push('<div class="banner info">' + I.eye + "<p>" + (ehLeitor() ? "Você está vendo os dados " + (donoLeitor() ? "de <b>" + esc(donoLeitor()) + "</b>" : "compartilhados com você") + ". Só dá para ver: nada aqui muda os dados." : "Modo leitura: você pode ver tudo, mas não alterar.") + "</p></div>");
   if (MODO_DRIVE) b.push(...driveBanners());
   setHTML($('[data-slot="banners"]'), b.join(""));
 }
@@ -1837,6 +1837,7 @@ function erroDb(e) {
     case "quota_exceeded": return "O espaço de dados do app está cheio. Apague registros antigos para continuar.";
     case "resource_exhausted": return "Muitas alterações seguidas. Espere alguns segundos e tente de novo.";
     case "revoked": return "Não foi possível salvar nesta visualização.";
+    case "read_only": return e.mensagem || "Aqui você só pode ver os dados.";
     default: return "Não consegui salvar agora. Verifique a internet e tente de novo.";
   }
 }
@@ -3519,7 +3520,7 @@ async function exportarZip(botao, destino) {
       toast(fora ? "Backup baixado" + fora : "Backup baixado.", fora ? "err" : "");
     }
   } catch (e) {
-    if (noDrive) toast(e?.code === "login" ? "Conecte o Google Drive e tente de novo." : e?.code === "offline" ? "Sem internet agora. Tente de novo quando a conexão voltar." : e?.code === "cota" ? "Seu Google Drive está cheio. Libere espaço e tente de novo." : "Não consegui salvar o backup no Google Drive.", "err");
+    if (noDrive) toast(e?.code === "read_only" ? "Aqui você só pode ver os dados." : e?.code === "login" ? "Conecte o Google Drive e tente de novo." : e?.code === "offline" ? "Sem internet agora. Tente de novo quando a conexão voltar." : e?.code === "cota" ? "Seu Google Drive está cheio. Libere espaço e tente de novo." : "Não consegui salvar o backup no Google Drive.", "err");
     else if (e?.code === "declined") { /* você cancelou */ }
     else if (e?.code === "extension_not_enabled" || e?.code === "rejected_extension") toast("Aqui não dá para baixar arquivos .zip. Use “Só os dados” e baixe os PDFs um por um.", "err");
     else if (!downloadsAcabaram(e)) toast(e?.code ? erroDownload(e) : "Não consegui montar o backup.", "err");
@@ -3974,12 +3975,53 @@ function boasVindasHTML() {
     (e.configurado ? "Conecte seu Google Drive para guardar os exames, as vacinas e os PDFs com segurança na sua conta. Se você já usou o app com o Google Drive, é só conectar: tudo volta sozinho. Tem só um backup .zip? Use Restaurar backup."
       : "Falta configurar o acesso ao Google (veja o LEIA-ME). Enquanto isso, dá para restaurar um backup ou começar a usar: tudo fica guardado neste aparelho.") +
     '</p></div><div class="row-btns">' + (e.configurado ? '<button class="btn primary" data-act="drive-conectar">' + I.cloud + "Conectar Google Drive</button>" : "") +
-    (podeEditar() ? '<button class="btn ghost" data-act="restaurar">' + I.restore + "Restaurar backup</button>" : "") + "</div></section>";
+    (podeEditar() ? '<button class="btn ghost" data-act="restaurar">' + I.restore + "Restaurar backup</button>" : "") + "</div>" +
+    (e.configurado ? leitorConviteHTML() : "") + "</section>";
+}
+/* ---------- leitor: ver os dados que outra pessoa compartilhou (só leitura) ---------- */
+const ehLeitor = () => estadoDrive()?.papel === "leitor";
+const donoLeitor = () => { const d = estadoDrive()?.dono; return typeof d === "string" && d.trim() ? d.trim() : ""; };
+/* aparelho sem dados próprios: pode entrar como leitor */
+const semDadosProprios = () => !S.pet && !S.exames.length && !S.vacinas.length && !S.remedios.length && !S.lembretes.length && !S.pesos.length;
+function leitorConviteHTML() {
+  return '<div class="drive-sub"><span class="lbl">Alguém compartilhou os dados com você?</span>' +
+    '<p class="fhint">Entre com a <b>sua</b> conta Google para ver os exames, os gráficos e os PDFs que o dono do app compartilhou. Só dá para ver, não para mudar. ' +
+    "Na primeira vez, o Google mostra “O Google não verificou este app”: toque em <b>Avançado</b> → <b>Acessar</b>. Depois ele pede para ver os arquivos do seu Drive: o app só lê a pasta “" + esc(nomePasta()) + "” que compartilharam com você.</p>" +
+    '<div class="row-btns"><button type="button" class="btn ghost sm" data-act="drive-leitor" data-fk="dr-leitor">' + I.eye + "Ver dados de outra pessoa (só leitura)</button></div></div>";
+}
+function leitorCardHTML(e) {
+  const pasta = pastaDrive();
+  let h = '<p class="drive-msg">Você está vendo os dados ' + (donoLeitor() ? "de <b>" + esc(donoLeitor()) + "</b>" : "compartilhados com você") + ". Só dá para ver: nada aqui muda os dados.</p>";
+  h += '<dl class="kv"><div><dt>Sua conta</dt><dd>' + esc(e.conta || e.nome || "—") + "</dd></div>" +
+    "<div><dt>Última atualização</dt><dd>" + esc(e.sincronizando ? "agora" : haQuanto(e.ultimaSync)) + "</dd></div></dl>";
+  if (e.erro) h += '<p class="drive-msg' + (e.erro.code === "offline" ? "" : " err") + '">' + esc(msgErroDrive(e.erro)) + "</p>";
+  h += '<div class="row-btns">' +
+    (e.conectado ? '<button type="button" class="btn primary sm" data-act="drive-sincronizar" data-fk="dr-sync"' + (e.sincronizando ? " disabled" : "") + ">" + I.sync + (e.sincronizando ? "Atualizando…" : "Atualizar agora") + "</button>"
+      : '<button type="button" class="btn primary sm" data-act="drive-conectar" data-fk="dr-con">' + I.cloud + "Entrar de novo para atualizar</button>") +
+    (pasta ? '<a class="btn ghost sm" href="' + esc(pasta) + '" target="_blank" rel="noopener noreferrer">' + I.ext + "Abrir pasta no Drive</a>" : "") + "</div>";
+  h += '<div class="drive-sub"><span class="lbl">Parar de ver estes dados</span><p class="fhint">Apaga deste aparelho o que foi baixado e sai do modo leitor. Os dados continuam no Drive de quem compartilhou.</p>' +
+    '<div class="row-btns"><button type="button" class="btn danger-ghost sm" data-act="drive-apagar-aparelho" data-fk="dr-apagar">' + I.trash + "Sair do modo leitor</button></div></div>";
+  return h;
+}
+function conectarLeitor() {
+  if (!DRIVE) return;
+  let p;
+  try { p = DRIVE.conectar({ leitor: true }); } catch (e) { toast("Não consegui abrir o login do Google.", "err"); return; }
+  Promise.resolve(p).then(atualizarDrive, e => {
+    atualizarDrive();
+    if (["cancelado", "popup_closed", "popup_closed_by_user"].includes(e?.code) && ehIOS() && instalado() && estadoDrive()?.metodo !== "redirecionar") {
+      toast("A janela do Google fechou sem entrar. Se acontecer de novo, toque no aviso do Google Drive no alto da tela → Como entrar no Google → “Redirecionar”.");
+      return;
+    }
+    if (["declined", "cancelado", "popup_closed", "popup_closed_by_user"].includes(e?.code)) return;
+    toast(e?.mensagem || "Não deu para entrar. Tente de novo.", "err");
+  });
 }
 function driveBanners() {
   const e = estadoDrive(), b = [];
   if (!e) return b;
-  if (avisoApagado) b.push('<div class="banner info">' + I.check + "<p><b>Apagado deste aparelho.</b> Falta um passo: saia da sua conta Google aqui (" + esc(SAIR_GOOGLE) + ")</p>" + '<button class="btn sm ghost" data-act="aviso-apagado-ok">Entendi</button></div>');
+  if (avisoApagado === "leitor") b.push('<div class="banner info">' + I.check + "<p><b>Pronto, você saiu do modo leitor.</b> Se este aparelho não for seu, saia também da sua conta Google (" + esc(SAIR_GOOGLE) + ")</p>" + '<button class="btn sm ghost" data-act="aviso-apagado-ok">Entendi</button></div>');
+  else if (avisoApagado) b.push('<div class="banner info">' + I.check + "<p><b>Apagado deste aparelho.</b> Falta um passo: saia da sua conta Google aqui (" + esc(SAIR_GOOGLE) + ")</p>" + '<button class="btn sm ghost" data-act="aviso-apagado-ok">Entendi</button></div>');
   /* Safari do iPhone sem instalar: os dados daqui não aparecem no app instalado e o Safari pode apagá-los */
   if (ehIOS() && !instalado()) b.push('<div class="banner warn">' + I.alert + "<p><b>Você está no Safari.</b> Para usar no iPhone, instale primeiro (toque em ··· ou em Compartilhar → Adicionar à Tela de Início) e abra pelo ícone Princesa. O app instalado não vê o que for feito aqui, e o Safari pode apagar o que não tiver ido para o Google Drive se você ficar 7 dias sem abrir.</p></div>");
   const btn = (act, txt, prim) => '<button class="btn sm ' + (prim ? "primary" : "ghost") + '" data-act="' + act + '">' + txt + "</button>";
@@ -3987,20 +4029,32 @@ function driveBanners() {
   if (e.armazenamentoLocal === "memoria") b.push('<div class="banner warn">' + I.alert + "<p><b>Este navegador não deixa o app guardar dados no aparelho</b> (talvez seja uma janela anônima). O que você fizer só fica salvo depois de ir para o Google Drive.</p></div>");
   if (!e.configurado) { if (!boasVindasVisivel()) b.push('<div class="banner warn">' + I.alert + "<p>Falta configurar o acesso ao Google. Veja o LEIA-ME.</p></div>"); return b; }
   if (e.erro?.code === "login" && !e.conectado && !e.precisaLogin) {
-    b.push('<div class="banner warn">' + I.alert + "<p>" + esc(msgErroDrive(e.erro)) + "</p>" + btn("drive-conectar", I.cloud + (e.contaConhecida ? "Sincronizar com o Google Drive" : "Tentar de novo"), true) + "</div>");
+    b.push('<div class="banner warn">' + I.alert + "<p>" + esc(msgErroDrive(e.erro)) + "</p>" + (e.erro.leitor ? btn("drive-leitor", I.eye + "Tentar de novo (só ver)", true) : btn("drive-conectar", I.cloud + (e.contaConhecida ? "Sincronizar com o Google Drive" : "Tentar de novo"), true)) + "</div>");
+    return b;
+  }
+  /* aparelho com dados do dono tentou virar leitor */
+  if (e.erro?.code === "tem_dados") {
+    b.push('<div class="banner warn">' + I.alert + "<p>" + esc(msgErroDrive(e.erro)) + "</p></div>");
+    return b;
+  }
+  /* leitor sem pasta (conta errada ou pasta não compartilhada): diz com qual conta entrou e deixa trocar */
+  if (e.papel === "leitor" && e.erro?.code === "sem_pasta") {
+    b.push('<div class="banner warn">' + I.alert + "<p>" + esc(msgErroDrive(e.erro)) + (e.conta ? " Você entrou como <b>" + esc(e.conta) + "</b>." : "") + "</p>" +
+      btn("drive-sincronizar", "Tentar de novo") + btn("drive-apagar-aparelho", "Entrar com outra conta") + "</div>");
     return b;
   }
   if (!e.contaConhecida) {
     /* erro na primeira conexão (ex.: a API do Drive não foi ativada): mostra o motivo mesmo com as boas-vindas na tela */
     if (e.erro && e.erro.code !== "offline") {
-      b.push('<div class="banner warn">' + I.alert + "<p>" + esc(msgErroDrive(e.erro)) + "</p>" + (e.conectado ? btn("drive-sincronizar", "Tentar de novo", true) : btn("drive-conectar", I.cloud + "Tentar de novo", true)) + "</div>");
+      b.push('<div class="banner warn">' + I.alert + "<p>" + esc(msgErroDrive(e.erro)) + "</p>" + (e.conectado ? btn("drive-sincronizar", "Tentar de novo", true) : e.erro.leitor ? btn("drive-leitor", I.eye + "Tentar de novo (só ver)", true) : btn("drive-conectar", I.cloud + "Tentar de novo", true)) + "</div>");
       return b;
     }
     if (!boasVindasVisivel()) b.push('<div class="banner info">' + I.cloud + "<p>Conecte seu Google Drive para guardar tudo com segurança.</p>" + btn("drive-conectar", I.cloud + "Conectar Google Drive", true) + "</div>");
     return b;
   }
   if (e.precisaLogin) {
-    b.push('<div class="banner warn">' + I.cloudup + "<p>" + (n ? "Há " + plural(n, "alteração esperando", "alterações esperando") + " para ir para o Google Drive." : "Faz um tempo que este aparelho não sincroniza com o Google Drive.") + "</p>" + btn("drive-conectar", "Sincronizar com o Google Drive", true) + "</div>");
+    if (e.papel === "leitor") b.push('<div class="banner info">' + I.cloud + "<p>Para ver os dados mais novos, entre de novo na sua conta Google.</p>" + btn("drive-conectar", "Atualizar os dados", true) + "</div>");
+    else b.push('<div class="banner warn">' + I.cloudup + "<p>" + (n ? "Há " + plural(n, "alteração esperando", "alterações esperando") + " para ir para o Google Drive." : "Faz um tempo que este aparelho não sincroniza com o Google Drive.") + "</p>" + btn("drive-conectar", "Sincronizar com o Google Drive", true) + "</div>");
     return b;
   }
   if (e.erro) {
@@ -4164,7 +4218,7 @@ function montarResumo() {
 const RES = { rodando: false, erro: null, tentarDepois: 0, timer: 0 };
 const COLS_RESUMO = ["exames", "vacinas", "remedios", "lembretes", "pesos", "pet"];
 function podeResumo(e) {
-  return !!e && e.configurado && e.conectado && !e.sincronizando && !e.erro && e.pendentes === 0 && ehNum(e.ultimaSync) && e.puxouNestaSessao !== false &&
+  return !!e && e.papel !== "leitor" && e.configurado && e.conectado && !e.sincronizando && !e.erro && e.pendentes === 0 && ehNum(e.ultimaSync) && e.puxouNestaSessao !== false &&
     COLS_RESUMO.every(carregou) && !S.erroDados && !restaurando;
 }
 function agendarResumo() {
@@ -4232,11 +4286,17 @@ async function apagarAparelho() {
   const e = estadoDrive(), n = ehNum(e?.pendentes) ? e.pendentes : 0;
   const perda = n === 1 ? "Atenção: 1 alteração (exame, vacina, remédio ou arquivo) ainda não está no Google Drive e vai se perder para sempre. Toque em Cancelar e depois em Sincronizar agora. "
     : n > 1 ? "Atenção: " + n + " alterações (exames, vacinas, remédios ou arquivos) ainda não estão no Google Drive e vão se perder para sempre. Toque em Cancelar e depois em Sincronizar agora. " : "";
-  const sim = await confirmar({
-    titulo: "Sair e apagar deste aparelho?",
-    texto: perda + "Isto apaga deste aparelho os exames, os arquivos e o login do app." + (n ? " O resto continua no seu Google Drive." : " Seus dados continuam no seu Google Drive.") + " Depois, saia também da sua conta Google neste aparelho: " + SAIR_GOOGLE,
-    ok: n ? "Apagar mesmo assim" : "Apagar deste aparelho", perigo: true,
-  });
+  const sim = ehLeitor()
+    ? await confirmar({
+      titulo: "Sair do modo leitor?",
+      texto: "Isto apaga deste aparelho o que foi baixado e o login do app. Os dados continuam no Drive de quem compartilhou, e você pode entrar como leitor de novo quando quiser. Se este aparelho não for seu, saia também da sua conta Google: " + SAIR_GOOGLE,
+      ok: "Sair do modo leitor", perigo: true,
+    })
+    : await confirmar({
+      titulo: "Sair e apagar deste aparelho?",
+      texto: perda + "Isto apaga deste aparelho os exames, os arquivos e o login do app." + (n ? " O resto continua no seu Google Drive." : " Seus dados continuam no seu Google Drive.") + " Depois, saia também da sua conta Google neste aparelho: " + SAIR_GOOGLE,
+      ok: n ? "Apagar mesmo assim" : "Apagar deste aparelho", perigo: true,
+    });
   if (!sim) return;
   clearTimeout(RES.timer);
   while (assinaturas.length) { try { assinaturas.pop()(); } catch (x) { /* já encerrada */ } }
@@ -4249,19 +4309,26 @@ async function apagarAparelho() {
     toast(x?.mensagem || "Não consegui apagar tudo. Feche as outras abas do app e tente de novo.", "err");
     return;
   }
-  try { sessionStorage.setItem("prontuario-apagado", "1"); } catch (x) { /* sem o lembrete */ }
+  try { sessionStorage.setItem("prontuario-apagado", ehLeitor() ? "leitor" : "1"); } catch (x) { /* sem o lembrete */ }
   location.reload();
 }
 const SAIR_GOOGLE = "numa aba anônima, feche todas as abas anônimas; se não, no google.com toque na sua foto → Gerenciar contas (ou Sair) e tire a sua conta.";
 /* depois de apagar e recarregar: lembra de sair da conta Google */
 let avisoApagado = false;
-try { if (sessionStorage.getItem("prontuario-apagado")) { avisoApagado = true; sessionStorage.removeItem("prontuario-apagado"); } } catch (e) { /* ok */ }
+try { const v = sessionStorage.getItem("prontuario-apagado"); if (v) { avisoApagado = v === "leitor" ? "leitor" : true; sessionStorage.removeItem("prontuario-apagado"); } } catch (e) { /* ok */ }
 function driveCardHTML() {
   const e = estadoDrive();
   if (!e) return '<div class="drive-card"><p class="drive-msg">O Google Drive não está disponível nesta versão do app.</p></div>';
   if (!e.configurado) return '<div class="drive-card"><p class="drive-msg">Falta configurar o acesso ao Google. Veja o LEIA-ME.</p>' + instalacaoHTML() + "</div>";
   const n = ehNum(e.pendentes) ? e.pendentes : 0;
   let h = "";
+  if (e.papel === "leitor") {
+    h = leitorCardHTML(e);
+    const ml = e.metodo === "redirecionar" ? "redirecionar" : "janela";
+    const chipL = (k, txt) => '<button type="button" class="chipbtn" data-act="drive-metodo" data-m="' + k + '" data-fk="dr-m-' + k + '" aria-pressed="' + (ml === k) + '">' + (ml === k ? I.check : "") + esc(txt) + "</button>";
+    h += '<div class="drive-sub"><span class="lbl">Como entrar no Google</span><div class="row-btns">' + chipL("janela", "Janela") + chipL("redirecionar", "Redirecionar") + "</div></div>";
+    return '<div class="drive-card">' + h + instalacaoHTML() + "</div>";
+  }
   if (!e.contaConhecida) {
     h += '<p class="drive-msg">Ainda não conectado. Conecte para guardar tudo com segurança na sua conta Google, numa pasta chamada “' + esc(nomePasta()) + "”.</p>" +
       '<div class="row-btns"><button type="button" class="btn primary sm" data-act="drive-conectar" data-fk="dr-con">' + I.cloud + "Conectar Google Drive</button></div>";
@@ -4279,6 +4346,8 @@ function driveCardHTML() {
       '<button type="button" class="btn danger-ghost sm" data-act="drive-desconectar" data-fk="dr-sair">Desconectar</button></div>';
     h += resumoCardHTML(e);
   }
+  /* aparelho sem dados próprios (ex.: conectou a conta errada): pode ver os de outra pessoa */
+  if (semDadosProprios() && COLS_RESUMO.every(carregou)) h += leitorConviteHTML();
   const m = e.metodo === "redirecionar" ? "redirecionar" : "janela";
   const chip = (k, txt) => '<button type="button" class="chipbtn" data-act="drive-metodo" data-m="' + k + '" data-fk="dr-m-' + k + '" aria-pressed="' + (m === k) + '">' + (m === k ? I.check : "") + esc(txt) + "</button>";
   h += '<div class="drive-sub"><span class="lbl">Como entrar no Google</span><div class="row-btns">' + chip("janela", "Janela") + chip("redirecionar", "Redirecionar") + "</div>" +
@@ -4301,7 +4370,7 @@ function conectarDrive() {
     atualizarDrive();
     /* no iPhone instalado a janela do Google pode fechar sem devolver o login: deixa a pista do Redirecionar */
     if (["cancelado", "popup_closed", "popup_closed_by_user"].includes(e?.code) && ehIOS() && instalado() && estadoDrive()?.metodo !== "redirecionar") {
-      toast("A janela do Google fechou sem entrar. Se acontecer de novo, vá em Ficha → Google Drive e escolha “Redirecionar”.");
+      toast("A janela do Google fechou sem entrar. Se acontecer de novo, toque no aviso do Google Drive no alto da tela → Como entrar no Google → “Redirecionar”.");
       return;
     }
     if (["declined", "cancelado", "popup_closed", "popup_closed_by_user"].includes(e?.code)) return;
@@ -4346,12 +4415,22 @@ Object.assign(ACOES, {
   "instalar": () => instalarApp(),
   "resumo-atualizar": () => atualizarResumo(true),
   "drive-apagar-aparelho": () => apagarAparelho(),
+  "drive-leitor": () => conectarLeitor(),
   "aviso-apagado-ok": () => { avisoApagado = false; agendarRender(); },
 });
 function iniciarDrive() {
   vigiarImagens();
   if (!DRIVE) return;
-  try { if (typeof DRIVE.on === "function") DRIVE.on("estado", () => { atualizarDrive(); agendarResumo(); }); } catch (e) { /* sem avisos do Drive */ }
+  try {
+    const papelInicial = estadoDrive()?.papel;
+    if (typeof DRIVE.on === "function") DRIVE.on("estado", e => {
+      /* virou leitor depois que a página abriu (com telas de edição talvez abertas): recomeça limpo */
+      if (e?.papel === "leitor" && papelInicial !== "leitor") { location.reload(); return; }
+      if (e?.papel === "leitor") S.canWrite = false;
+      atualizarDrive();
+      agendarResumo();
+    });
+  } catch (e) { /* sem avisos do Drive */ }
   /* "há 2 min" envelhece sozinho */
   setInterval(() => { if (document.visibilityState === "visible") $$('[data-slot="drivecard"]').forEach(el => setHTML(el, driveCardHTML())); }, 30000);
   window.addEventListener("beforeinstallprompt", ev => { ev.preventDefault(); pedidoInstalar = ev; atualizarDrive(); });

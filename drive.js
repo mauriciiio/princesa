@@ -24,6 +24,9 @@
   const prazoPara = (bytes) => PRAZO_REDE + (Number(bytes) || 0) / 40; // + ~40 KB/s para corpos grandes
 
   const ESCOPO = "https://www.googleapis.com/auth/drive.file";
+  // Leitor (família): só lê a pasta que o dono compartilhou. drive.file não enxerga
+  // arquivos de outra conta, então o leitor precisa do escopo de leitura do Drive.
+  const ESCOPO_LEITOR = "https://www.googleapis.com/auth/drive.readonly";
   const PASTA_MIME = "application/vnd.google-apps.folder";
   const COLECOES = ["exames", "vacinas", "remedios", "lembretes", "pesos", "config"];
   const LIMITE_MULTIPART = 5 * 1024 * 1024;
@@ -36,7 +39,8 @@
   const TIPO_EXT = { "application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif" };
   const CHAVE = {
     token: "prontuario.token", conta: "prontuario.conta", nome: "prontuario.nome",
-    metodo: "prontuario.metodo", state: "prontuario.state", dispositivo: "prontuario.dispositivo"
+    metodo: "prontuario.metodo", state: "prontuario.state", dispositivo: "prontuario.dispositivo",
+    papel: "prontuario.papel", papelPendente: "prontuario.papelPendente"
   };
   const CHAVES_META = ["ultimoPull", "ultimaSync", "md5", "pastas", "anexos", "lixeira", "ignorados", "resumo"];
 
@@ -49,11 +53,14 @@
     apiDesativada: "A Google Drive API não está ativada no Google Cloud (LEIA-ME, Parte 1, passo 3). Se acabou de ativar, espere alguns minutos e toque em Tentar de novo.",
     login: "Seu acesso ao Google Drive expirou. Toque em Sincronizar para entrar de novo.",
     loginFalhou: "Não consegui entrar no Google. Tente de novo.",
-    loginNoSafari: "O login do Google voltou aqui no Safari, e não no app da tela de início. Feche esta aba e abra pelo ícone Princesa. Lá, em Ficha → Google Drive → Como entrar no Google, escolha \"Janela\". (Para usar aqui no Safari mesmo, toque em Tentar de novo.)",
-    gisCarregando: "O login do Google ainda está carregando. Toque de novo em instantes (ou escolha \"Redirecionar\" em Ficha → Google Drive).",
+    loginNoSafari: "O login do Google voltou aqui no Safari, e não no app da tela de início. Feche esta aba e abra pelo ícone Princesa. Lá, toque no aviso do Google Drive no alto da tela → Como entrar no Google, e escolha \"Janela\". (Para usar aqui no Safari mesmo, toque em Tentar de novo.)",
+    gisCarregando: "O login do Google ainda está carregando. Toque de novo em instantes (ou toque no aviso do Google Drive no alto da tela → Como entrar no Google → \"Redirecionar\").",
     loginNegado: "Você não permitiu o acesso ao Google Drive.",
     escopo: "O Google não deu acesso ao Drive. Tente de novo e permita o acesso aos arquivos.",
-    local: "Não consegui guardar no aparelho. Tente de novo."
+    local: "Não consegui guardar no aparelho. Tente de novo.",
+    semPastaLeitor: "Não achei nenhuma pasta “" + NOME_PASTA + "” compartilhada com esta conta. Peça para o dono do app compartilhar a pasta com o seu e-mail e toque em Tentar de novo.",
+    somenteLeitura: "Você está só vendo os dados de outra pessoa: aqui não dá para mudar nada.",
+    temDadosDono: "Este aparelho já tem os dados do dono. Para ver como leitor, primeiro use Sair e apagar deste aparelho."
   };
 
   // ---------------------------------------------------------------------------
@@ -115,6 +122,12 @@
   const meta = { ultimoPull: null, ultimaSync: null, md5: {}, pastas: {}, anexos: {}, lixeira: [], ignorados: [], resumo: {} };
   let token = lerToken();
   let metodo = lerMetodo();
+  // "dono" grava e sincroniza; "leitor" só lê a pasta que o dono compartilhou
+  let papel = ls.ler(CHAVE.papel) === "leitor" ? "leitor" : "dono";
+  // leitor nesta aba ou em outra (o localStorage é o mesmo): nunca grava
+  const leitorAgora = () => papel === "leitor" || ls.ler(CHAVE.papel) === "leitor";
+  // login de leitor que voltou pelo redirecionamento: só vale depois de abrir o banco (iniciar)
+  let leitorPendente = null;
   let erroAtual = null;
   let sincronizando = false;
   let precisaPerfil = false;
@@ -433,6 +446,7 @@
   // db (parecido com o Firestore, só o que o app usa)
   // ---------------------------------------------------------------------------
   async function escreverLocal(col, id, dados, apagado) {
+    if (leitorAgora()) throw erro("read_only", MSG.somenteLeitura);
     await prontoPromessa;
     const chave = chaveDoc(col, id);
     const antes = docs.get(chave);
@@ -505,6 +519,7 @@
   }
 
   async function enviarAnexo(arquivo, opcoes) {
+    if (leitorAgora()) throw erro("read_only", MSG.somenteLeitura);
     if (!arquivo || typeof arquivo.size !== "number") throw erro("unsupported_type", "Arquivo inválido.");
     const tipo = tipoDoArquivo(arquivo, opcoes);
     if (!tipo) throw erro("unsupported_type", "Esse tipo de arquivo não é aceito.");
@@ -523,6 +538,7 @@
   }
 
   async function apagarAnexo(id) {
+    if (leitorAgora()) throw erro("read_only", MSG.somenteLeitura);
     id = String(id || "");
     if (!ID_OK.test(id)) return { deleted: false };
     await prontoPromessa;
@@ -773,7 +789,8 @@
   }
   // Considera vencido 2 min antes
   const tokenValido = () => !!token && token.expira - 120000 > agora();
-  const escopoOk = (s) => String(s || "").split(/[\s,]+/).includes(ESCOPO);
+  const escopoDoPapel = (leitor) => (leitor ? ESCOPO_LEITOR : ESCOPO);
+  const escopoOk = (s, alvo) => String(s || "").split(/[\s,]+/).includes(alvo || escopoDoPapel(papel === "leitor"));
 
   function guardarToken(acesso, expiraEmSeg, escopo) {
     const seg = Number(expiraEmSeg) > 0 ? Number(expiraEmSeg) : 3600;
@@ -791,21 +808,27 @@
     const acesso = p.get("access_token"), falhou = p.get("error");
     if (!acesso && !falhou) return;
     const esperado = ls.ler(CHAVE.state), recebido = p.get("state");
+    const pendente = ls.ler(CHAVE.papelPendente) === "leitor";
+    ls.apagar(CHAVE.papelPendente);
+    const alvo = escopoDoPapel(pendente || papel === "leitor");
     if (acesso) {
       if (token && token.access_token === acesso) {
         // chegou de novo (iOS): já guardado
       } else if (!esperado || recebido !== esperado) {
         // iPhone: o login saiu do app da tela de início e voltou no Safari (outro armazenamento)
         erroAtual = erro("login", !esperado && ehIOS() && !instalado() ? MSG.loginNoSafari : MSG.loginFalhou);
-      } else if (!escopoOk(p.get("scope"))) {
-        erroAtual = erro("login", MSG.escopo);
+      } else if (!escopoOk(p.get("scope"), alvo)) {
+        erroAtual = erro("login", MSG.escopo, pendente ? { leitor: true } : undefined);
+      } else if (pendente && papel !== "leitor") {
+        // confere os dados do aparelho antes de virar leitor (ver iniciar)
+        leitorPendente = { acesso, expira: p.get("expires_in"), escopo: p.get("scope") };
       } else {
         guardarToken(acesso, p.get("expires_in"), p.get("scope"));
         precisaPerfil = true;
         erroAtual = null;
       }
     } else {
-      erroAtual = erro("login", falhou === "access_denied" ? MSG.loginNegado : MSG.loginFalhou);
+      erroAtual = erro("login", falhou === "access_denied" ? MSG.loginNegado : MSG.loginFalhou, pendente ? { leitor: true } : undefined);
     }
     limparHash(loc);
   }
@@ -831,28 +854,57 @@
   }
 
   // Precisa ser chamado direto no clique (a janela do Google precisa do gesto)
-  function conectar() {
+  // Este aparelho tem algo do dono que ainda não pode ser descartado?
+  function temDadosDoDono() {
+    if (filaEnvio.size || meta.lixeira.length) return true;
+    for (const r of docs.values()) if (r.sujo || !r.apagado) return true;
+    return false;
+  }
+
+  // Passa a ser leitor: esquece o que era da conta de dono (aparelho sem dados do dono)
+  function virarLeitor() {
+    papel = "leitor";
+    ls.gravar(CHAVE.papel, "leitor");
+    ls.apagar(CHAVE.conta);
+    ls.apagar(CHAVE.nome);
+    meta.pastas = {}; meta.md5 = {}; meta.anexos = {}; meta.ultimoPull = null; meta.ignorados = []; meta.resumo = { quando: agora() };
+    mapaConferido = false; pastasConferidas = false; puxouNestaSessao = false; faltas.clear(); anexosNaLixeira.clear();
+    salvarMeta("pastas", "md5", "anexos", "ultimoPull", "ignorados", "resumo").catch(() => {});
+  }
+
+  // opcoes.leitor: entrar só para ver os dados que outra pessoa compartilhou
+  function conectar(opcoes) {
     if (!CONFIGURADO) return Promise.reject(erro("nao_configurado", "Falta configurar o acesso ao Google."));
+    const leitor = papel === "leitor" || !!(opcoes && opcoes.leitor);
+    if (leitor && papel !== "leitor" && temDadosDoDono()) return Promise.reject(erro("tem_dados", MSG.temDadosDono));
     const oauth2 = G.google && G.google.accounts && G.google.accounts.oauth2;
-    if (metodo === "janela" && oauth2 && typeof oauth2.initTokenClient === "function") return conectarJanela(oauth2);
+    if (metodo === "janela" && oauth2 && typeof oauth2.initTokenClient === "function") return conectarJanela(oauth2, leitor);
     if (metodo === "janela" && GIS_SRC) {
       carregarGis();
       // iPhone instalado: redirecionar pode jogar o login para o Safari; espera o GIS
       if (ehIOS() && instalado()) return Promise.reject(erro("login", MSG.gisCarregando));
     }
-    return conectarRedirecionando();
+    return conectarRedirecionando(leitor);
   }
 
-  function conectarJanela(oauth2) {
+  function conectarJanela(oauth2, leitor) {
     return new Promise((ok, falha) => {
       const conta = ls.ler(CHAVE.conta);
+      const escopo = escopoDoPapel(leitor);
       const config = {
         client_id: CLIENT_ID,
-        scope: ESCOPO,
+        scope: escopo,
+        // sem juntar com o que já foi dado antes: o leitor não leva drive.file, e o dono não leva leitura de tudo
+        include_granted_scopes: false,
         prompt: conta ? "" : "consent",
         callback: (resp) => {
           if (!resp || resp.error || !resp.access_token) { falha(erro("login", MSG.loginFalhou)); return; }
-          if (!escopoOk(resp.scope)) { erroAtual = erro("login", MSG.escopo); atualizarEstado(); falha(erroAtual); return; }
+          if (!escopoOk(resp.scope, escopo)) { erroAtual = erro("login", MSG.escopo, leitor ? { leitor: true } : undefined); atualizarEstado(); falha(erroAtual); return; }
+          if (leitor && papel !== "leitor") {
+            // algo foi gravado enquanto a janela do Google estava aberta: não vira leitor
+            if (temDadosDoDono()) { erroAtual = erro("tem_dados", MSG.temDadosDono); atualizarEstado(); falha(erroAtual); return; }
+            virarLeitor();
+          }
           guardarToken(resp.access_token, resp.expires_in, resp.scope);
           precisaPerfil = true;
           erroAtual = null;
@@ -864,7 +916,7 @@
           if (tipo === "popup_failed_to_open") {
             // janela bloqueada: passa a usar redirecionamento
             definirMetodo("redirecionar");
-            conectarRedirecionando().then(ok, falha);
+            conectarRedirecionando(leitor).then(ok, falha);
           } else if (tipo === "popup_closed") {
             falha(erro("cancelado", "Login cancelado."));
           } else {
@@ -876,22 +928,25 @@
       try {
         oauth2.initTokenClient(config).requestAccessToken();
       } catch (e) {
-        conectarRedirecionando().then(ok, falha);
+        conectarRedirecionando(leitor).then(ok, falha);
       }
     });
   }
 
-  function conectarRedirecionando() {
+  function conectarRedirecionando(leitor) {
     const loc = G.location;
     const state = aleatorio(24, ALFA_NUM);
     ls.gravar(CHAVE.state, state);
+    // o papel só muda quando o login voltar certo (lerRetornoLogin)
+    if (leitor && papel !== "leitor") ls.gravar(CHAVE.papelPendente, "leitor");
+    else ls.apagar(CHAVE.papelPendente);
     const conta = ls.ler(CHAVE.conta);
     const p = new URLSearchParams({
       client_id: CLIENT_ID,
       redirect_uri: loc.origin + loc.pathname,
       response_type: "token",
-      scope: ESCOPO,
-      include_granted_scopes: "true",
+      scope: escopoDoPapel(leitor || papel === "leitor"),
+      include_granted_scopes: "false",
       state
     });
     if (conta) p.set("login_hint", conta);
@@ -1390,6 +1445,149 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Leitor (família): lê a pasta que o dono compartilhou, sem gravar nada no Drive
+  // ---------------------------------------------------------------------------
+  const Q_PASTAS = "mimeType='" + PASTA_MIME + "' and trashed=false";
+  const textoQ = (t) => String(t).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
+  // A pasta do app compartilhada com esta conta, e as subpastas dados e anexos
+  async function pastasDoLeitor() {
+    const p = meta.pastas || {};
+    if (p.leitor && p.raiz && p.dados && await pastaViva(p.raiz) && await pastaViva(p.dados)) return p;
+    const tinha = !!(p.leitor && p.raiz);
+    const raizes = await listarTudo("sharedWithMe=true and name='" + textoQ(NOME_PASTA) + "' and " + Q_PASTAS,
+      "id,name,createdTime,modifiedTime,appProperties,owners(displayName,emailAddress)");
+    // a pasta marcada pelo app vem antes; depois a mais recente
+    const ehDoApp = (f) => !!(f.appProperties && f.appProperties.papel === "raiz");
+    raizes.sort((a, b) => (ehDoApp(b) - ehDoApp(a)) || porIdade(a, b));
+    for (const r of raizes) {
+      const filhas = await listarTudo("'" + textoQ(r.id) + "' in parents and " + Q_PASTAS, "id,name,createdTime,appProperties");
+      const achar = (n) => filhas.filter((f) => f.name === n || (f.appProperties && f.appProperties.papel === n)).sort(porIdade)[0];
+      const dados = achar("dados"), anexos = achar("anexos");
+      if (!dados) continue;
+      const dono = (Array.isArray(r.owners) && r.owners[0]) || {};
+      meta.pastas = {
+        leitor: 1, raiz: r.id, dados: dados.id, anexos: anexos ? anexos.id : null,
+        dono: String(dono.displayName || dono.emailAddress || "").slice(0, 120)
+      };
+      pastasMudaram = true;
+      await salvarMeta("pastas");
+      return meta.pastas;
+    }
+    // o dono tirou o compartilhamento: o que foi baixado sai deste aparelho
+    if (tinha) await limparCacheLeitor();
+    throw erro("sem_pasta", MSG.semPastaLeitor);
+  }
+
+  async function limparCacheLeitor() {
+    for (const col of COLECOES) await substituirColecao(col, Object.create(null));
+    for (const r of Array.from(docs.values())) await substituirColecao(r.col, Object.create(null));
+    try {
+      const blobs = (await operar("blobs", "readonly", (s) => s.getAll())) || [];
+      await operar("blobs", "readwrite", (s) => { for (const b of blobs) if (b && b.id) s.delete(b.id); });
+      for (const b of blobs) if (b && b.id) liberarUrl(b.id);
+    } catch (e) { /* ok */ }
+    meta.pastas = {}; meta.md5 = {}; meta.anexos = {};
+    await salvarMeta("pastas", "md5", "anexos");
+  }
+
+  // Baixa os JSON das coleções. Só baixa de novo o que mudou (ids + md5).
+  // null: a pasta que este aparelho usava não tem mais as coleções que já teve (procurar de novo)
+  async function lerColecoesLeitor(p, confiar) {
+    const lista = await listarTudo("'" + textoQ(p.dados) + "' in parents and trashed=false", "id,name,md5Checksum,appProperties,createdTime,mimeType");
+    const porCol = {};
+    for (const f of lista) {
+      if (f.mimeType === PASTA_MIME) continue;
+      const ap = f.appProperties || {};
+      if (ap.papel === "estragado") continue;
+      let col = ap.col;
+      // pelo nome só quando o Google não mostra a marca do app (senão é anexo, backup...)
+      if (!col && !Object.keys(ap).length) { const m = /^([a-z]+)\.json$/.exec(String(f.name || "")); col = m && COLECOES.includes(m[1]) ? m[1] : null; }
+      if (!col || !COLECOES.includes(col)) continue;
+      (porCol[col] = porCol[col] || []).push(f);
+    }
+    const mudaram = [];
+    for (const col of COLECOES) {
+      const arqs = (porCol[col] || []).sort(porIdade);
+      const assinatura = arqs.map((f) => f.id + ":" + (f.md5Checksum || "")).join(",");
+      if (meta.md5[col] === assinatura && !docsDaColecao(col).some((r) => r.sujo)) continue; // nada mudou
+      if (!arqs.length && meta.md5[col] && !confiar) return null;
+      const remotos = Object.create(null);
+      let falhou = false, bons = 0, ruins = 0;
+      for (const f of arqs) {
+        let texto;
+        try { texto = await api("GET", "files/" + encodeURIComponent(f.id), { query: { alt: "media" }, resposta: "texto" }); }
+        catch (e) { if (e.code === "nao_encontrado") { falhou = true; continue; } throw e; }
+        let obj = null;
+        try { obj = JSON.parse(texto); } catch (e) { obj = null; }
+        if (!obj || typeof obj !== "object" || !obj.docs || typeof obj.docs !== "object") { ruins++; continue; }
+        bons++;
+        for (const id of Object.keys(obj.docs)) {
+          const r = obj.docs[id];
+          if (!docRemotoValido(id, r)) continue;
+          if (!remotos[id] || ganha(r, remotos[id])) remotos[id] = r;
+        }
+      }
+      // arquivo sumido no meio, ou nenhum legível (o dono está gravando): fica o que já tinha
+      if (falhou || (ruins && !bons)) continue;
+      if (await substituirColecao(col, remotos)) mudaram.push(col);
+      meta.md5[col] = assinatura;
+    }
+    await salvarMeta("md5");
+    return mudaram;
+  }
+
+  // O aparelho do leitor fica igual ao Drive do dono (sem mescla: o leitor não escreve)
+  async function substituirColecao(col, remotos) {
+    const gravar = [], tirar = [];
+    let visivel = false;
+    for (const id of Object.keys(remotos)) {
+      const r = remotos[id], chave = chaveDoc(col, id), local = docs.get(chave);
+      const novo = { col, id, dados: r.apagado ? null : r.dados, atualizado: r.atualizado, apagado: !!r.apagado, dispositivo: String(r.dispositivo || ""), sujo: 0 };
+      if (local && mesmaVersao(local, novo) && !!local.apagado === novo.apagado && !local.sujo) continue;
+      if (mudouVisivel(local, novo)) visivel = true;
+      docs.set(chave, novo);
+      gravar.push(novo);
+    }
+    for (const local of docsDaColecao(col)) {
+      if (Object.prototype.hasOwnProperty.call(remotos, local.id) || local.sujo) continue;
+      if (!local.apagado) visivel = true;
+      docs.delete(chaveDoc(col, local.id));
+      tirar.push(chaveDoc(col, local.id));
+    }
+    await gravarDocs(gravar);
+    if (tirar.length) await operar("docs", "readwrite", (s) => { for (const k of tirar) s.delete(k); });
+    if (visivel) emitirColecao(col);
+    return visivel;
+  }
+
+  // Anexos do dono: pela marca do app (aid) e, se ela não vier, pelo nome (quando é único)
+  async function mapaAnexosLeitor() {
+    const p = meta.pastas || {};
+    const mapa = Object.create(null);
+    if (p.anexos) {
+      const lista = await listarTudo("'" + textoQ(p.anexos) + "' in parents and trashed=false", "id,name,appProperties");
+      const porNome = Object.create(null);
+      for (const f of lista) {
+        const aid = f.appProperties && f.appProperties.aid;
+        if (aid && ID_OK.test(aid) && !mapa[aid]) mapa[aid] = f.id;
+        (porNome[f.name] = porNome[f.name] || []).push(f.id);
+      }
+      for (const r of docs.values()) {
+        if (r.apagado || !r.dados || !Array.isArray(r.dados.arquivos)) continue;
+        for (const a of r.dados.arquivos) {
+          if (!a || typeof a.id !== "string" || mapa[a.id] || !a.nome) continue;
+          const ids = porNome[a.nome];
+          if (ids && ids.length === 1) mapa[a.id] = ids[0];
+        }
+      }
+    }
+    meta.anexos = mapa;
+    mapaFresco = true;
+    await salvarMeta("anexos");
+  }
+
+  // ---------------------------------------------------------------------------
   // Anexos: fila de envio e lixeira
   // ---------------------------------------------------------------------------
   // Uma listagem por vez, compartilhada (várias miniaturas não listam juntas)
@@ -1403,6 +1601,7 @@
   // anotados para a sincronização decidir). A busca do Drive pode atrasar: quem sumiu
   // dela é conferido pelo id (404 sai do mapa).
   async function atualizarMapaAgora() {
+    if (papel === "leitor") return mapaAnexosLeitor();
     const lista = await listarTudo("appProperties has {key='app' and value='prontuario'}", "id,appProperties,trashed,parents");
     const achados = {}, lixo = {};
     for (const f of lista) {
@@ -1611,6 +1810,7 @@
     if (code === "sem_token") return null;
     if (code === "offline" || code === "cota" || code === "sem_permissao" || code === "login") return erro(code, e.mensagem || MSG[code]);
     if (code === "drive") return erro("drive", e.mensagem || MSG.drive);
+    if (code === "sem_pasta") return erro("sem_pasta", e.mensagem || MSG.semPastaLeitor);
     return erro("drive", MSG.drive);
   }
 
@@ -1638,6 +1838,30 @@
     let blobsMexidos = false;
     try {
       if (precisaPerfil || !ls.ler(CHAVE.conta)) await buscarPerfil();
+      if (papel !== "leitor" && leitorAgora()) return; // outra aba virou leitor: esta vai recarregar
+      if (papel === "leitor") {
+        // leitor: só baixa da pasta compartilhada; nunca grava no Drive
+        let p = await pastasDoLeitor();
+        let lidas = await lerColecoesLeitor(p, false);
+        if (lidas === null) {
+          // a pasta que este aparelho usava esvaziou (o dono passou a usar outra): procura de novo
+          meta.pastas = {};
+          p = await pastasDoLeitor();
+          lidas = (await lerColecoesLeitor(p, true)) || [];
+        }
+        for (const c of lidas) colsMudadas.add(c);
+        meta.ultimoPull = agora();
+        await salvarMeta("ultimoPull");
+        puxouNestaSessao = true;
+        resolverPrimeiroPull();
+        if (!mapaConferido || pastasMudaram || faltaNoMapa()) { await atualizarMapaAnexos(); anotarFaltas(); }
+        mapaConferido = true;
+        pastasMudaram = false;
+        meta.ultimaSync = agora();
+        await salvarMeta("ultimaSync");
+        erroAtual = null;
+        return;
+      }
       const pastas = await garantirPastas();
       const arquivos = await listarArquivosDados();
       const cols = new Set(COLECOES);
@@ -1705,6 +1929,12 @@
     // login/logout feito em outra aba
     ouvir(G, "storage", (ev) => {
       if (!ev || (ev.key && !String(ev.key).startsWith("prontuario."))) return;
+      if (!apagando && (ls.ler(CHAVE.papel) === "leitor" ? "leitor" : "dono") !== papel) {
+        // outra aba virou leitor (ou saiu): recomeça com o papel certo
+        parar();
+        try { if (G.location && typeof G.location.reload === "function") G.location.reload(); } catch (e) { /* ok */ }
+        return;
+      }
       token = lerToken();
       atualizarEstado();
     });
@@ -1781,11 +2011,13 @@
       sincronizando,
       pendentes,
       ultimaSync: meta.ultimaSync == null ? null : meta.ultimaSync,
-      erro: erroAtual ? { code: erroAtual.code, mensagem: erroAtual.mensagem } : null,
+      erro: erroAtual ? { code: erroAtual.code, mensagem: erroAtual.mensagem, leitor: !!erroAtual.leitor } : null,
       metodo,
       armazenamentoLocal: armazem.tipo,
       pastaId: (meta.pastas && meta.pastas.raiz) || null,
-      puxouNestaSessao
+      puxouNestaSessao,
+      papel,
+      dono: papel === "leitor" && meta.pastas && meta.pastas.dono ? String(meta.pastas.dono) : null
     };
   }
 
@@ -1810,6 +2042,7 @@
   // API de controle (drive) e backups
   // ---------------------------------------------------------------------------
   async function salvarArquivo(nome, dados) {
+    if (leitorAgora()) throw erro("read_only", MSG.somenteLeitura);
     if (!CONFIGURADO || !tokenValido()) throw erro("login", "Conecte o Google Drive primeiro.");
     nome = String(nome || "backup");
     const blob = typeof Blob !== "undefined" && dados instanceof Blob ? dados : new Blob([dados == null ? "" : dados], { type: tipoPorNome(nome) });
@@ -1889,6 +2122,7 @@
   const errosQueParam = (e) => !!e && (e.code === "login" || e.code === "offline" || e.code === "cota" || e.code === "sem_token");
 
   async function salvarResumoAgora(html, op) {
+    if (leitorAgora()) throw erro("read_only", MSG.somenteLeitura);
     if (!CONFIGURADO || !tokenValido()) throw erro("login", "Conecte o Google Drive primeiro.");
     const nome = String(op.nome || "Resumo de saúde").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 120) || "Resumo de saúde";
     const corpo = new Blob([String(html == null ? "" : html)], { type: "text/html" });
@@ -1980,14 +2214,14 @@
     });
   }
 
-  function apagarChavesLocais() {
+  function apagarChavesLocais(manterPapel) {
     try {
       const st = G.localStorage;
       if (!st) return;
       const chaves = [];
       for (let i = 0; i < st.length; i++) {
         const k = st.key(i);
-        if (k && k.startsWith("prontuario.")) chaves.push(k);
+        if (k && k.startsWith("prontuario.") && !(manterPapel && k === CHAVE.papel)) chaves.push(k);
       }
       for (const k of chaves) ls.apagar(k);
     } catch (e) { /* bloqueado */ }
@@ -2013,9 +2247,10 @@
     try { if (armazem.db) armazem.db.close(); } catch (e) { /* ok */ }
     armazem.db = null;
     if (armazem.memoria) armazem.memoria = { docs: new Map(), blobs: new Map(), meta: new Map() };
-    apagarChavesLocais();
+    // o papel de leitor fica até o banco sumir: se falhar, os dados baixados não viram "do dono"
+    apagarChavesLocais(true);
     const r = await apagarBanco();
-    apagarChavesLocais(); // alguma escrita atrasada pode ter voltado
+    apagarChavesLocais(r !== "ok"); // alguma escrita atrasada pode ter voltado
     // 2ª fase: o banco já foi apagado; as outras abas recarregam vazias
     try { if (canal) canal.postMessage({ tipo: "apagado", aba: ABA }); } catch (e) { /* ok */ }
     parar();
@@ -2045,7 +2280,7 @@
   const capacidades = {
     db,
     assets: { upload: enviarAnexo, delete: apagarAnexo, list: listarAnexos },
-    user: { can: async () => true },
+    user: { can: async () => !leitorAgora() },
     downloads: { save: (o) => entregarArquivo(o && o.filename, o && o.data) }
   };
 
@@ -2066,6 +2301,18 @@
     } catch (e) {
       avisarConsole("não consegui ler o IndexedDB, usando memória", e);
       usarMemoria();
+    }
+    if (leitorPendente) {
+      const lp = leitorPendente;
+      leitorPendente = null;
+      if (temDadosDoDono()) {
+        erroAtual = erro("tem_dados", MSG.temDadosDono);
+      } else {
+        virarLeitor();
+        guardarToken(lp.acesso, lp.expira, lp.escopo);
+        precisaPerfil = true;
+        erroAtual = null;
+      }
     }
   }
 

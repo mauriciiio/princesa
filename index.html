@@ -836,7 +836,7 @@ const TITULOS = [
   "Radiografia de tórax", "Radiografia de coluna", "Citologia", "Exame oftalmológico",
 ];
 const ANALITOS = [
-  ["Hemácias", "milhões/µL"], ["Hemoglobina", "g/dL"], ["Hematócrito", "%"], ["VCM", "fL"], ["HCM", "pg"], ["CHCM", "g/dL"],
+  ["Hemácias", "milhões/µL"], ["Hemoglobina", "g/dL"], ["Hematócrito", "%"], ["VCM", "fL"], ["HCM", "pg"], ["CHCM", "g/dL"], ["RDW", "%"],
   ["Leucócitos", "/µL"], ["Neutrófilos segmentados", "/µL"], ["Bastonetes", "/µL"], ["Metamielócitos", "/µL"], ["Linfócitos", "/µL"], ["Monócitos", "/µL"], ["Eosinófilos", "/µL"], ["Basófilos", "/µL"],
   ["Plaquetas", "/µL"], ["Proteína plasmática total", "g/dL"], ["Ureia", "mg/dL"], ["Creatinina", "mg/dL"], ["SDMA", "µg/dL"],
   ["ALT (TGP)", "U/L"], ["AST (TGO)", "U/L"], ["Fosfatase alcalina", "U/L"], ["GGT", "U/L"], ["Albumina", "g/dL"],
@@ -872,6 +872,8 @@ const ALIAS = {
   "globulina": "globulinas", "proteina total": "proteinas totais", "proteina total serica": "proteinas totais", "proteinas totais sericas": "proteinas totais",
   "neutrofilos segmentados absolutos": "neutrofilos segmentados", "eritrocitos totais": "hemacias", "hemacia": "hemacias",
   "pesquisa de hematozoario": "pesquisa de hematozoarios", "hematozoarios": "pesquisa de hematozoarios",
+  "triglicerides": "triglicerideos", "triglicerideo": "triglicerideos", "trigliceridios": "triglicerideos",
+  "contagem plaquetaria": "plaquetas", "contagem total de plaquetas": "plaquetas", "r d w": "rdw", "rdw cv": "rdw",
 };
 const chaveAnalito = nome => { const n = norm(nome); return ALIAS[n] || n; };
 const SIT = { alto: "Acima da referência", baixo: "Abaixo da referência", ok: "Dentro da referência", sem: "Sem referência", na: "" };
@@ -1459,7 +1461,7 @@ function evoUpdate(soLista) {
 
 /* ---------- tabela comparativa ---------- */
 const GRUPOS_TAB = [
-  ["Hemograma", ["Hemácias", "Hemoglobina", "Hematócrito", "VCM", "HCM", "CHCM", "Proteína plasmática total", "Plaquetas", "Pesquisa de hematozoários"]],
+  ["Hemograma", ["Hemácias", "Hemoglobina", "Hematócrito", "VCM", "HCM", "CHCM", "RDW", "Proteína plasmática total", "Plaquetas", "Pesquisa de hematozoários"]],
   ["Leucograma", ["Leucócitos", "Neutrófilos segmentados", "Bastonetes", "Metamielócitos", "Linfócitos", "Monócitos", "Eosinófilos", "Basófilos"]],
   ["Bioquímico", ["Ureia", "Creatinina", "SDMA", "ALT (TGP)", "AST (TGO)", "Fosfatase alcalina", "GGT", "Proteínas totais", "Albumina", "Globulinas", "Glicose", "Colesterol total", "Triglicerídeos", "Fósforo", "Cálcio total", "Potássio", "Sódio", "T4 total"]],
   ["Urina", ["Densidade urinária", "pH urinário", "Relação proteína/creatinina urinária"]],
@@ -2694,7 +2696,7 @@ function nomePorChave() {
   return nomesConhecidos;
 }
 const DIFERENCIAL = new Set(["neutrofilos segmentados", "bastonetes", "metamielocitos", "mielocitos", "linfocitos", "monocitos", "eosinofilos", "basofilos"]);
-const CHAVES_HEMO = new Set(["hemacias", "hemoglobina", "hematocrito", "vcm", "hcm", "chcm", "leucocitos", "plaquetas", "proteina plasmatica total", "neutrofilos segmentados", "bastonetes", "metamielocitos", "linfocitos", "monocitos", "eosinofilos", "basofilos"]);
+const CHAVES_HEMO = new Set(["hemacias", "hemoglobina", "hematocrito", "vcm", "hcm", "chcm", "rdw", "leucocitos", "plaquetas", "proteina plasmatica total", "neutrofilos segmentados", "bastonetes", "metamielocitos", "linfocitos", "monocitos", "eosinofilos", "basofilos"]);
 const CHAVES_BIO = new Set(["ureia", "creatinina", "sdma", "alt tgp", "ast tgo", "fosfatase alcalina", "ggt", "glicose", "proteinas totais", "albumina", "globulinas", "colesterol total", "triglicerideos", "fosforo", "calcio total", "potassio", "sodio", "t4 total"]);
 const CHAVES_URINA = new Set(["densidade urinaria", "ph urinario", "relacao proteina creatinina urinaria"]);
 const RE_UNID = /(milh[õo]es\s*\/\s*(?:[µμu]l|mm3|mm³)|mil\s*\/\s*(?:[µμu]l|mm3|mm³)|\/\s*(?:[µμu]l|mm3|mm³|[µμ]³)|mg\s*\/\s*dl|g\s*\/\s*dl|mg\s*%|g\s*%|u\.?\s*i?\.?\s*\/\s*l|mmol\s*\/\s*l|meq\s*\/\s*l|[µμu]g\s*\/\s*dl|[µμu]mol\s*\/\s*l|ng\s*\/\s*ml|\bfl\b|\bpg\b|mmhg|bpm|(?<![a-z])kg\b|%)/i;
@@ -2814,7 +2816,7 @@ async function linhasDoPdf(pdf, maxPag, signal) {
   return out;
 }
 /* rótulos que encerram um campo do cabeçalho quando vários campos estão na mesma linha */
-const PROX = "(?=\\s+(?:requisitante|solicitante|m[ée]dic[oa]|vet\\w*|esp[ée]cie|ra[cç]a|sexo|idade|peso|propriet\\w*|tutor|respons\\w*|cl[ií]nica|data|paciente|animal|nome|crmv|prop\\.?)\\b|\\s*$)";
+const PROX = "(?=\\s+(?:requisitante|solicitante|m[ée]dic[oa]|vet\\w*|esp[ée]cie|ra[cç]a|sexo|idade|peso|propriet\\w*|tutor|respons\\w*|cl[ií]nica|data|paciente|animal|nome|crmv|prop\\.?)\\b|\\s+p[áa]gina\\s*:?\\s*\\d|\\s+controle\\s*:|\\s*$)";
 const RE_CLINICA = new RegExp("(?:cl[ií]nica(?:\\s*vet(?:erin[aá]ria)?)?|hospital\\s*vet\\w*)\\s*\\.*\\s*:\\s*(.+?)" + PROX, "i");
 const RE_VET = new RegExp("(?:m[ée]dic[oa]\\s*vet(?:erin[aá]ri[oa])?|vet(?:erin[aá]ri[oa])?\\s*(?:solicitante|requisitante)|solicitante|requisitante)\\s*\\.*\\s*:\\s*(.+?)" + PROX, "i");
 const RE_VET_RESP = new RegExp("vet(?:erin[aá]ri[oa])?\\s*respons[aá]vel\\s*\\.*\\s*:\\s*(.+?)" + PROX, "i");
@@ -4253,6 +4255,8 @@ async function prepararRestauracao(arq) {
   plano = planoRestauracao(backup.dados, backup.mapa, locaisRestauracao());
   const quando = (() => { const d = new Date(backup.dados.exportadoEm || ""); return isNaN(d) ? "" : " · feito em " + fmtData(iso(d)); })();
   let h = '<p class="confirm-text"><b>' + esc(arq.name || "backup") + "</b>" + esc(quando) + "</p>";
+  /* pacote montado no chat com o Claude: diz de onde veio */
+  if (typeof backup.dados.origem === "string" && backup.dados.origem.trim()) h += '<p class="fhint">' + esc(backup.dados.origem.trim().slice(0, 120)) + ".</p>";
   if (!plano.total) {
     soFechar(h + '<p class="confirm-text">Tudo o que está neste backup já está aqui. Não há nada para restaurar.</p>');
     return;
@@ -4268,6 +4272,24 @@ async function prepararRestauracao(arq) {
   if (plano.nArquivos && !CAP.assets) notas.push("Aqui não dá para enviar arquivos: só os dados serão restaurados.");
   if (plano.pulados) notas.push(plano.pulados > 1 ? plano.pulados + " registros já estão aqui (iguais ou mais novos) e serão pulados." : "1 registro já está aqui (igual ou mais novo) e será pulado.");
   if (plano.substituidos) notas.push(plural(plano.substituidos, "registro mais antigo daqui será trocado", "registros mais antigos daqui serão trocados") + " pela versão do backup.");
+  /* exame novo com a mesma data e o mesmo tipo de um que já está aqui: pode ser o mesmo laudo duas vezes.
+     Os exames que o próprio backup também traz não contam (exames diferentes do mesmo dia, restauração pela metade). */
+  {
+    const doBackup = new Set((Array.isArray(backup.dados.exames) ? backup.dados.exames : []).map(e => e && e.id).filter(Boolean));
+    const nomeEx = e => "“" + (String(e.titulo || "").trim() || TIPO[e.tipo]?.nome || "Exame") + "”";
+    const parecidos = [];
+    for (const it of plano.itens) {
+      if (it.col !== "exames" || it.local) continue;
+      const igual = (S.exames || []).find(x => x.id !== it.id && !doBackup.has(x.id) && x.data && x.data === it.doc.data && x.tipo === it.doc.tipo);
+      if (igual) parecidos.push([it.doc, igual]);
+    }
+    if (parecidos.length === 1) {
+      const [novo, aqui] = parecidos[0];
+      notas.push("O exame " + nomeEx(novo) + " de " + fmtData(novo.data) + " tem a mesma data e o mesmo tipo de " + nomeEx(aqui) + ", que já está aqui. Se for o mesmo laudo, cancele para não ficar repetido.");
+    } else if (parecidos.length > 1) {
+      notas.push(parecidos.length + " exames deste arquivo têm a mesma data e o mesmo tipo de exames que já estão aqui (" + juntarTxt(parecidos.slice(0, 3).map(([n]) => nomeEx(n) + " de " + fmtData(n.data))) + (parecidos.length > 3 ? " e outros" : "") + "). Se forem os mesmos laudos, cancele para não ficarem repetidos.");
+    }
+  }
   if (plano.nArquivos > 5) notas.push("Mantenha o app aberto até terminar.");
   h += notas.map(n => '<p class="fhint">' + esc(n) + "</p>").join("");
   slot.innerHTML = h;

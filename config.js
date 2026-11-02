@@ -5,7 +5,7 @@
 window.PRONTUARIO_CONFIG = {
   clientId: "644670718664-klpilkb3ouf5l9m2cqbupt4grhtd6r8k.apps.googleusercontent.com",
   // Chave de API (links de compartilhamento). Também não é segredo: fica restrita ao seu site.
-  apiKey: "COLE_A_CHAVE_DE_API_AQUI",
+  apiKey: "AIzaSyBGYe9YxoSssDdkfZNLHx8nIm46bQL7in8",
   apiBase: "https://www.googleapis.com",
   authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
   revokeUrl: "https://oauth2.googleapis.com/revoke",

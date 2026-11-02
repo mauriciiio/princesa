@@ -3979,6 +3979,7 @@ function boasVindasHTML() {
 function driveBanners() {
   const e = estadoDrive(), b = [];
   if (!e) return b;
+  if (avisoApagado) b.push('<div class="banner info">' + I.check + "<p><b>Apagado deste aparelho.</b> Falta um passo: saia da sua conta Google aqui (" + esc(SAIR_GOOGLE) + ")</p>" + '<button class="btn sm ghost" data-act="aviso-apagado-ok">Entendi</button></div>');
   /* Safari do iPhone sem instalar: os dados daqui não aparecem no app instalado e o Safari pode apagá-los */
   if (ehIOS() && !instalado()) b.push('<div class="banner warn">' + I.alert + "<p><b>Você está no Safari.</b> Para usar no iPhone, instale primeiro (toque em ··· ou em Compartilhar → Adicionar à Tela de Início) e abra pelo ícone Princesa. O app instalado não vê o que for feito aqui, e o Safari pode apagar o que não tiver ido para o Google Drive se você ficar 7 dias sem abrir.</p></div>");
   const btn = (act, txt, prim) => '<button class="btn sm ' + (prim ? "primary" : "ghost") + '" data-act="' + act + '">' + txt + "</button>";
@@ -4019,6 +4020,242 @@ function instalacaoHTML() {
 function pastaDrive() {
   try { const u = DRIVE?.pastaUrl?.(); return typeof u === "string" && /^https?:\/\//.test(u) ? u : null; } catch (e) { return null; }
 }
+/* ---------- resumo para a família: um Google Doc no Drive, feito a partir dos dados ---------- */
+/* hash curto (cyrb53): só para saber se o resumo mudou */
+function hashTexto(s) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+}
+const nomeResumo = () => "Resumo de saúde " + dela();
+function infoResumoDrive() {
+  try { const r = DRIVE?.resumo?.(); return r && typeof r.url === "string" && /^https:\/\//.test(r.url) ? r : null; } catch (e) { return null; }
+}
+function linkAnexoDrive(id) {
+  try { const u = DRIVE?.linkAnexo?.(id); return typeof u === "string" && /^https:\/\//.test(u) ? u : null; } catch (e) { return null; }
+}
+const porData = (a, b) => String(b.data || "").localeCompare(String(a.data || "")) || String(b.criadoEm || "").localeCompare(String(a.criadoEm || ""));
+/* HTML que o Google Drive transforma em documento (tabelas simples, estilo inline) */
+function montarResumo() {
+  const real = r => r && !r.exemplo;
+  const exames = S.exames.filter(real).sort(porData);
+  const vacinas = S.vacinas.filter(real), remedios = S.remedios.filter(real), lembretes = S.lembretes.filter(real);
+  /* peso: a mesma série do app (registros de peso + peso dos exames), sem os exemplos */
+  const pesosReais = new Set(S.pesos.filter(real).map(w => w.id));
+  const pa = calcAnalitos(exames).find(a => a.key === "peso");
+  const pesos = (pa ? pa.serie : []).filter(x => !x.pesoId || pesosReais.has(x.pesoId)).slice().reverse();
+  const p = S.pet || {};
+  if (!S.pet && !exames.length && !vacinas.length && !remedios.length && !lembretes.length && !pesos.length) return null;
+  const txt = s => esc(String(s ?? "").trim()).replace(/\r?\n/g, "<br>");
+  const BORDA = "border:1px solid #d9d2e3;padding:5px 8px;vertical-align:top";
+  const th = t => '<th style="' + BORDA + ';background:#f1eaf7;text-align:left">' + esc(t) + "</th>";
+  const td = (h, cor) => '<td style="' + BORDA + (cor ? ";color:" + cor + ";font-weight:bold" : "") + '">' + (h || "—") + "</td>";
+  const tabela = (cab, linhas) => '<table style="border-collapse:collapse;width:100%">' + (cab ? "<tr>" + cab.map(th).join("") + "</tr>" : "") + linhas.map(l => "<tr>" + l.join("") + "</tr>").join("") + "</table>";
+  const vazio = t => '<p style="color:#6b6076">' + esc(t) + "</p>";
+  const arquivos = r => (Array.isArray(r.arquivos) ? r.arquivos : []).filter(a => a && idOk(a.id)).map(a => {
+    const u = linkAnexoDrive(a.id), n = esc(a.nome || "arquivo");
+    return u ? '<a href="' + esc(u) + '">' + n + "</a>" : n + " (ainda não foi para o Drive)";
+  });
+  const SITU = { alto: ["↑ Alto", "#b42318"], baixo: ["↓ Baixo", "#b54708"], ok: ["Normal", "#027a48"] };
+  const resultado = v => ehNum(v?.valor) ? esc(fmtNum(v.valor) + (v.unidade ? " " + v.unidade : "")) : txt(v?.texto);
+  const ref = v => { const t = refTxt(v); return t === "Sem referência" ? "" : esc(t.replace(/^Ref\. /, "")); };
+  let h = "<h1>" + esc(nomeResumo()) + "</h1>";
+  h += '<p style="color:#6b6076">Feito e atualizado sozinho pelo app Prontuário. Não edite aqui: a próxima atualização apaga as mudanças. Para abrir os PDFs, a pessoa precisa ter acesso à pasta “' + esc(nomePasta()) + '” (compartilhe a pasta, não só este documento).</p>';
+  h += "<p><b>@@ATUALIZADO@@</b></p>";
+
+  /* ficha */
+  const kg = pesos.length ? pesos[0].vb : num(p.peso);
+  const ficha = [
+    ["Nome", txt(p.nome)], ["Raça", txt(p.raca)], ["Sexo", txt(p.sexo)],
+    ["Nascimento", parseISO(p.nascimento) ? esc(fmtData(p.nascimento)) : ""],
+    ["Peso", ehNum(kg) ? esc(fmtNum(kg) + " kg" + (pesos.length ? " (em " + fmtData(pesos[0].data) + ")" : "")) : ""],
+    ["Castrada", txt(p.castrada)], ["Microchip", txt(p.microchip)], ["Alergias e observações", txt(p.observacoes)],
+  ].filter(x => x[1]);
+  h += "<h2>Ficha</h2>" + (ficha.length ? tabela(null, ficha.map(([k, v]) => ['<td style="' + BORDA + ';background:#f1eaf7;width:32%"><b>' + esc(k) + "</b></td>", td(v)])) : vazio("A ficha ainda não foi preenchida."));
+  const unico = arr => [...new Set(arr.map(x => String(x || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt"));
+  const clinicas = unico([...exames, ...vacinas].map(r => r.clinica)), vets = unico([...exames, ...vacinas, ...remedios].map(r => r.veterinario));
+  if (clinicas.length || vets.length) {
+    h += "<h3>Clínicas e veterinários</h3><ul>" + (clinicas.length ? "<li>Clínicas: " + esc(clinicas.join(", ")) + "</li>" : "") + (vets.length ? "<li>Veterinários: " + esc(vets.join(", ")) + "</li>" : "") + "</ul>";
+  }
+
+  /* fora da referência no resultado mais recente de cada valor */
+  const foraLista = calcAnalitos(exames).filter(a => a.key !== "peso" && fora(a.status)).sort((a, b) => a.nome.localeCompare(b.nome, "pt"));
+  h += "<h2>Atenção: valores fora da referência</h2>";
+  h += foraLista.length ? tabela(["Valor", "Resultado", "Referência", "Situação", "Exame"], foraLista.map(a => {
+    const s = SITU[a.status];
+    return [td(esc(a.nome)), td(resultado(a.ultimo)), td(ref(a.ultimo)), td(esc(s[0]), s[1]), td(esc(a.ultimo.exame + (parseISO(a.ultimo.data) ? " · " + fmtData(a.ultimo.data) : "")))];
+  })) : vazio(exames.length ? "Todos os valores mais recentes estão dentro da referência." : "Ainda não há exames com valores.");
+
+  /* remédios em uso */
+  const emUso = remedios.filter(ativo).sort((a, b) => String(a.nome || "").localeCompare(String(b.nome || ""), "pt"));
+  h += "<h2>Remédios em uso</h2>";
+  h += emUso.length ? tabela(["Remédio", "Dose", "Frequência", "Para quê", "Desde", "Próxima dose"], emUso.map(r => [
+    td("<b>" + txt(r.nome) + "</b>" + (arquivos(r).length ? "<br>Receita: " + arquivos(r).join(", ") : "")), td(txt(r.dose)), td(txt(r.frequencia)), td(txt(r.motivo)),
+    td(parseISO(r.inicio) ? esc(fmtData(r.inicio)) : ""), td(parseISO(r.proximaDose) ? esc(fmtData(r.proximaDose)) : ""),
+  ])) : vazio("Nenhum remédio em uso.");
+
+  /* próximos cuidados */
+  const prox = [];
+  const ultimoExame = exames.find(e => parseISO(e.data))?.data;
+  if (ultimoExame) prox.push([addMeses(ultimoExame, intervalo()), "Check-up de rotina"]);
+  const grupos = new Map();
+  for (const v of vacinas) { const k = norm(v.vacina).replace(/\s+/g, "") || "?"; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(v); }
+  const gruposVac = [...grupos.values()].map(d => d.sort(porData)).sort((a, b) => String(a[0].vacina || "").localeCompare(String(b[0].vacina || ""), "pt"));
+  for (const d of gruposVac) if (parseISO(d[0].proximaDose)) prox.push([d[0].proximaDose, "Vacina " + (d[0].vacina || "")]);
+  for (const r of emUso) if (parseISO(r.proximaDose)) prox.push([r.proximaDose, "Dose de " + (r.nome || "remédio")]);
+  /* lembretes: só o título (as observações podem ser pessoais) */
+  for (const l of lembretes) if (!l.feito && parseISO(l.data)) prox.push([l.data, l.titulo || "Lembrete"]);
+  prox.sort((a, b) => a[0].localeCompare(b[0]));
+  /* datas fixas: o documento continua certo mesmo se ficar dias sem ser atualizado */
+  const hj = hoje(), futuros = prox.filter(([d]) => d >= hj), passados = prox.filter(([d]) => d < hj).reverse();
+  h += "<h2>Próximos cuidados</h2>";
+  h += futuros.length ? tabela(["Data", "O quê"], futuros.slice(0, 15).map(([d, t]) => [td(esc(fmtData(d))), td(txt(t))])) + (futuros.length > 15 ? vazio("E mais " + (futuros.length - 15) + " depois disso.") : "") : vazio("Nada marcado.");
+  if (passados.length) {
+    h += "<h3>Com data que já passou (confirme se já foi feito)</h3>" + tabela(["Era para", "O quê"], passados.slice(0, 8).map(([d, t]) => [td(esc(fmtData(d)), "#b42318"), td(txt(t))]));
+  }
+
+  /* vacinas */
+  h += "<h2>Vacinas</h2>";
+  h += gruposVac.length ? tabela(["Vacina", "Última dose", "Próxima dose", "Situação", "Comprovante"], gruposVac.map(d => {
+    const u = d[0], prox = parseISO(u.proximaDose) ? u.proximaDose : null;
+    const situ = !prox ? "" : prox < hoje() ? ["Vencida em " + fmtData(prox), "#b42318"] : ["Vale até " + fmtData(prox), "#027a48"];
+    return [td("<b>" + txt(u.vacina || "Vacina") + "</b>" + (d.length > 1 ? "<br>" + d.length + " doses registradas" : "")), td(parseISO(u.data) ? esc(fmtData(u.data)) : ""),
+      td(prox ? esc(fmtData(prox)) : ""), situ ? td(esc(situ[0]), situ[1]) : td(""), td(d.flatMap(arquivos).join(", "))];
+  })) : vazio("Nenhuma vacina registrada.");
+
+  /* peso */
+  h += "<h2>Peso</h2>";
+  h += pesos.length ? tabela(["Data", "Peso"], pesos.slice(0, 12).map(w => [td(esc(fmtData(w.data))), td(esc(fmtNum(Math.round(w.vb * 100) / 100) + " kg"))])) : vazio("Nenhum peso registrado.");
+
+  /* exames, do mais recente para o mais antigo */
+  h += "<h2>Exames</h2>";
+  if (!exames.length) h += vazio("Nenhum exame registrado.");
+  for (const e of exames) {
+    const t = TIPO[e.tipo] || TIPO.outro;
+    h += "<h3>" + esc((parseISO(e.data) ? fmtData(e.data) : "Sem data") + " · " + (e.titulo || t.nome)) + "</h3>";
+    const quem = [e.clinica, e.veterinario].map(x => String(x || "").trim()).filter(Boolean).join(" · ");
+    if (quem) h += "<p>" + esc(quem) + "</p>";
+    const ar = arquivos(e);
+    if (ar.length) h += "<p>Laudo: " + ar.join(", ") + "</p>";
+    if (String(e.observacoes || "").trim()) h += "<p><i>" + txt(e.observacoes) + "</i></p>";
+    const vals = (Array.isArray(e.valores) ? e.valores : []).filter(v => v && v.nome);
+    if (vals.length) h += tabela(["Valor", "Resultado", "Referência", "Situação"], vals.map(v => {
+      const s = SITU[statusOf(v)];
+      return [td(esc(v.nome)), td(resultado(v)), td(ref(v)), s ? td(esc(s[0]), s[1]) : td("")];
+    }));
+  }
+
+  /* remédios que já acabaram */
+  const antigos = remedios.filter(r => !ativo(r)).sort((a, b) => String(b.fim || "").localeCompare(String(a.fim || "")));
+  if (antigos.length) {
+    h += "<h2>Remédios anteriores</h2>" + tabela(["Remédio", "Dose", "Período", "Para quê"], antigos.slice(0, 20).map(r => [
+      td(txt(r.nome) + (arquivos(r).length ? "<br>Receita: " + arquivos(r).join(", ") : "")), td(txt(r.dose)), td(esc([parseISO(r.inicio) ? fmtData(r.inicio) : "", parseISO(r.fim) ? fmtData(r.fim) : ""].filter(Boolean).join(" a "))), td(txt(r.motivo))]));
+  }
+
+  const hash = hashTexto(h);
+  const d = new Date();
+  const quando = "Atualizado em " + fmtData(iso(d)) + " às " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ".";
+  const html = '<!doctype html><html><head><meta charset="utf-8"><title>' + esc(nomeResumo()) + '</title></head><body style="font-family:Arial,sans-serif">' + h.replace("@@ATUALIZADO@@", esc(quando)) + "</body></html>";
+  return { html, hash, nome: nomeResumo() };
+}
+/* atualiza sozinho depois de cada sincronização que mudou algo */
+const RES = { rodando: false, erro: null, tentarDepois: 0, timer: 0 };
+const COLS_RESUMO = ["exames", "vacinas", "remedios", "lembretes", "pesos", "pet"];
+function podeResumo(e) {
+  return !!e && e.configurado && e.conectado && !e.sincronizando && !e.erro && e.pendentes === 0 && ehNum(e.ultimaSync) && e.puxouNestaSessao !== false &&
+    COLS_RESUMO.every(carregou) && !S.erroDados && !restaurando;
+}
+function agendarResumo() {
+  if (!DRIVE?.salvarResumo) return;
+  clearTimeout(RES.timer);
+  RES.timer = setTimeout(() => atualizarResumo(false), 2500);
+}
+function redesenharDriveCard() { $$('[data-slot="drivecard"]').forEach(el => setHTML(el, driveCardHTML())); }
+async function atualizarResumo(manual) {
+  if (!DRIVE?.salvarResumo || RES.rodando) return;
+  const e = estadoDrive();
+  if (!podeResumo(e)) {
+    if (manual) toast(e?.pendentes ? "Espere terminar a sincronização e tente de novo." : "Conecte o Google Drive e espere sincronizar.", "err");
+    /* conectado e sincronizado, mas os dados ainda carregando ou um backup sendo restaurado */
+    else if (e?.conectado && !e.sincronizando && !e.erro && e.pendentes === 0 && (!COLS_RESUMO.every(carregou) || restaurando)) agendarResumoDepois();
+    return;
+  }
+  if (!manual && Date.now() < RES.tentarDepois) return;
+  const r = montarResumo();
+  if (!r) { if (manual) toast("Ainda não há dados para o resumo."); return; }
+  if (!manual && infoResumoDrive()?.hash === r.hash) return;
+  RES.rodando = true; redesenharDriveCard();
+  try {
+    await DRIVE.salvarResumo(r.html, { hash: r.hash, nome: r.nome, forcar: !!manual });
+    RES.erro = null; RES.tentarDepois = 0;
+    if (manual) toast("Resumo atualizado no Google Drive.");
+  } catch (er) {
+    RES.erro = msgErroDrive(er);
+    RES.tentarDepois = Date.now() + 5 * 60000;
+    if (manual) toast(RES.erro, "err");
+  } finally {
+    RES.rodando = false;
+    redesenharDriveCard();
+  }
+}
+/* os dados ainda estão chegando: tenta de novo daqui a pouco */
+function agendarResumoDepois() {
+  clearTimeout(RES.timer);
+  RES.timer = setTimeout(() => atualizarResumo(false), 5000);
+}
+function resumoCardHTML(e) {
+  const info = infoResumoDrive(), pasta = pastaDrive();
+  let st;
+  if (RES.rodando) st = "Atualizando o resumo…";
+  else if (RES.erro) st = "Não consegui atualizar o resumo agora: " + RES.erro;
+  else if (info?.quando) st = "Resumo atualizado " + haQuanto(info.quando) + ".";
+  else st = "O resumo é criado sozinho depois da próxima sincronização.";
+  return '<div class="drive-sub"><span class="lbl">Compartilhar com a família</span>' +
+    '<p class="fhint">O app mantém no seu Drive o documento “' + esc(nomeResumo()) + "”, com a ficha, os exames (com observações e PDFs), as vacinas, os remédios, o peso e os próximos cuidados. Ele se atualiza sozinho. " +
+    "Para alguém ver pelo Google Drive, sem o app e sem a sua senha, compartilhe a <b>pasta</b> “" + esc(nomePasta()) + "” com o e-mail da pessoa, como <b>Leitor</b>. " +
+    "Compartilhe a pasta, não só o documento: sem a pasta, os PDFs não abrem. Quem recebe a pasta vê tudo o que está nela, inclusive os backups do app.</p>" +
+    '<p class="fhint">' + esc(st) + "</p>" +
+    '<div class="row-btns">' + (info ? '<a class="btn ghost sm" href="' + esc(info.url) + '" target="_blank" rel="noopener noreferrer">' + I.ext + "Abrir resumo</a>" : "") +
+    (pasta ? '<a class="btn ghost sm" href="' + esc(pasta) + '" target="_blank" rel="noopener noreferrer">' + I.ext + "Abrir pasta para compartilhar</a>" : "") +
+    (e.conectado ? '<button type="button" class="btn ghost sm" data-act="resumo-atualizar" data-fk="dr-res"' + (RES.rodando ? " disabled" : "") + ">" + I.sync + "Atualizar resumo</button>" : "") + "</div>" +
+    '<p class="fhint">Como compartilhar: toque em Abrir pasta para compartilhar. No celular, toque nos ⋮ lá em cima → Compartilhar. No computador, clique no nome da pasta lá em cima → Compartilhar. Escreva o e-mail da pessoa, troque “Editor” para “Leitor” e toque em Enviar. Se o Google disser que você precisa de acesso, troque para a sua conta Google no canto de cima.</p></div>';
+}
+function apagarAparelhoHTML() {
+  return '<div class="drive-sub"><span class="lbl">Usou o celular ou computador de outra pessoa?</span>' +
+    '<p class="fhint">Quando terminar, apague o app daquele aparelho. Seus dados continuam no seu Google Drive.</p>' +
+    '<div class="row-btns"><button type="button" class="btn danger-ghost sm" data-act="drive-apagar-aparelho" data-fk="dr-apagar">' + I.trash + "Sair e apagar deste aparelho</button></div></div>";
+}
+async function apagarAparelho() {
+  if (!DRIVE?.apagarDoAparelho) return;
+  const e = estadoDrive(), n = ehNum(e?.pendentes) ? e.pendentes : 0;
+  const perda = n === 1 ? "Atenção: 1 alteração (exame, vacina, remédio ou arquivo) ainda não está no Google Drive e vai se perder para sempre. Toque em Cancelar e depois em Sincronizar agora. "
+    : n > 1 ? "Atenção: " + n + " alterações (exames, vacinas, remédios ou arquivos) ainda não estão no Google Drive e vão se perder para sempre. Toque em Cancelar e depois em Sincronizar agora. " : "";
+  const sim = await confirmar({
+    titulo: "Sair e apagar deste aparelho?",
+    texto: perda + "Isto apaga deste aparelho os exames, os arquivos e o login do app." + (n ? " O resto continua no seu Google Drive." : " Seus dados continuam no seu Google Drive.") + " Depois, saia também da sua conta Google neste aparelho: " + SAIR_GOOGLE,
+    ok: n ? "Apagar mesmo assim" : "Apagar deste aparelho", perigo: true,
+  });
+  if (!sim) return;
+  clearTimeout(RES.timer);
+  while (assinaturas.length) { try { assinaturas.pop()(); } catch (x) { /* já encerrada */ } }
+  /* nada mais pode ser tocado até recarregar */
+  try { document.body.inert = true; } catch (x) { /* navegador antigo */ }
+  toast("Apagando deste aparelho…");
+  try { await DRIVE.apagarDoAparelho(); }
+  catch (x) {
+    try { document.body.inert = false; } catch (y) { /* ok */ }
+    toast(x?.mensagem || "Não consegui apagar tudo. Feche as outras abas do app e tente de novo.", "err");
+    return;
+  }
+  try { sessionStorage.setItem("prontuario-apagado", "1"); } catch (x) { /* sem o lembrete */ }
+  location.reload();
+}
+const SAIR_GOOGLE = "numa aba anônima, feche todas as abas anônimas; se não, no google.com toque na sua foto → Gerenciar contas (ou Sair) e tire a sua conta.";
+/* depois de apagar e recarregar: lembra de sair da conta Google */
+let avisoApagado = false;
+try { if (sessionStorage.getItem("prontuario-apagado")) { avisoApagado = true; sessionStorage.removeItem("prontuario-apagado"); } } catch (e) { /* ok */ }
 function driveCardHTML() {
   const e = estadoDrive();
   if (!e) return '<div class="drive-card"><p class="drive-msg">O Google Drive não está disponível nesta versão do app.</p></div>';
@@ -4040,12 +4277,15 @@ function driveCardHTML() {
         : '<button type="button" class="btn primary sm" data-act="drive-conectar" data-fk="dr-con">' + I.cloud + "Sincronizar com o Google Drive</button>") +
       (pasta ? '<a class="btn ghost sm" href="' + esc(pasta) + '" target="_blank" rel="noopener noreferrer">' + I.ext + "Abrir pasta no Drive</a>" : "") +
       '<button type="button" class="btn danger-ghost sm" data-act="drive-desconectar" data-fk="dr-sair">Desconectar</button></div>';
+    h += resumoCardHTML(e);
   }
   const m = e.metodo === "redirecionar" ? "redirecionar" : "janela";
   const chip = (k, txt) => '<button type="button" class="chipbtn" data-act="drive-metodo" data-m="' + k + '" data-fk="dr-m-' + k + '" aria-pressed="' + (m === k) + '">' + (m === k ? I.check : "") + esc(txt) + "</button>";
   h += '<div class="drive-sub"><span class="lbl">Como entrar no Google</span><div class="row-btns">' + chip("janela", "Janela") + chip("redirecionar", "Redirecionar") + "</div>" +
     '<p class="fhint">' + (m === "redirecionar" ? "O app vai para a página do Google e volta sozinho depois." : "Abre uma janelinha do Google por cima do app. Se ela não abrir, use Redirecionar.") + "</p></div>";
   h += instalacaoHTML();
+  /* só quando os dados já estão no Drive (senão apagar perderia tudo de vez) */
+  if (e.contaConhecida && ehNum(e.ultimaSync)) h += apagarAparelhoHTML();
   return '<div class="drive-card">' + h + "</div>";
 }
 function atualizarDrive() {
@@ -4104,11 +4344,14 @@ Object.assign(ACOES, {
   "drive-painel": () => abrirPainelDrive(),
   "drive-metodo": el => { try { DRIVE?.definirMetodo(el.dataset.m === "redirecionar" ? "redirecionar" : "janela"); } catch (e) { /* fica como estava */ } atualizarDrive(); },
   "instalar": () => instalarApp(),
+  "resumo-atualizar": () => atualizarResumo(true),
+  "drive-apagar-aparelho": () => apagarAparelho(),
+  "aviso-apagado-ok": () => { avisoApagado = false; agendarRender(); },
 });
 function iniciarDrive() {
   vigiarImagens();
   if (!DRIVE) return;
-  try { if (typeof DRIVE.on === "function") DRIVE.on("estado", () => atualizarDrive()); } catch (e) { /* sem avisos do Drive */ }
+  try { if (typeof DRIVE.on === "function") DRIVE.on("estado", () => { atualizarDrive(); agendarResumo(); }); } catch (e) { /* sem avisos do Drive */ }
   /* "há 2 min" envelhece sozinho */
   setInterval(() => { if (document.visibilityState === "visible") $$('[data-slot="drivecard"]').forEach(el => setHTML(el, driveCardHTML())); }, 30000);
   window.addEventListener("beforeinstallprompt", ev => { ev.preventDefault(); pedidoInstalar = ev; atualizarDrive(); });

@@ -38,7 +38,7 @@
     token: "prontuario.token", conta: "prontuario.conta", nome: "prontuario.nome",
     metodo: "prontuario.metodo", state: "prontuario.state", dispositivo: "prontuario.dispositivo"
   };
-  const CHAVES_META = ["ultimoPull", "ultimaSync", "md5", "pastas", "anexos", "lixeira", "ignorados"];
+  const CHAVES_META = ["ultimoPull", "ultimaSync", "md5", "pastas", "anexos", "lixeira", "ignorados", "resumo"];
 
   // Mensagens curtas para o usuário
   const MSG = {
@@ -111,7 +111,8 @@
   const docs = new Map();       // "col/id" -> registro {col,id,dados,atualizado,apagado,dispositivo,sujo}
   const filaEnvio = new Set();  // ids de anexos ainda não enviados
   // ignorados: ids de arquivos do Drive que não dá para usar (estragados que não deu para renomear)
-  const meta = { ultimoPull: null, ultimaSync: null, md5: {}, pastas: {}, anexos: {}, lixeira: [], ignorados: [] };
+  // resumo: o Google Doc "Resumo de saúde" {id, hash, nome, quando}
+  const meta = { ultimoPull: null, ultimaSync: null, md5: {}, pastas: {}, anexos: {}, lixeira: [], ignorados: [], resumo: {} };
   let token = lerToken();
   let metodo = lerMetodo();
   let erroAtual = null;
@@ -122,6 +123,7 @@
   let mapaConferido = false;    // mapa de anexos conferido nesta sessão
   let pastasMudaram = false;    // as pastas foram procuradas de novo (lixeira, apagadas...)
   let pastasConferidas = false; // pastas em cache comparadas com as mais antigas do Drive nesta sessão
+  let puxouNestaSessao = false; // já baixou do Drive nesta sessão (o resumo só sai depois disso)
   const anexosNaLixeira = new Map(); // aid -> arquivo do Drive que está na lixeira
   const faltas = new Map();     // aid -> quando não foi achado no Drive (evita listar de novo)
   let prontoPromessa = null;    // carga inicial do IndexedDB
@@ -154,13 +156,24 @@
   // Conexão fechada pelo navegador (iOS ao voltar do segundo plano): esquece e reabre depois
   function prepararDb(db) {
     const esquecer = () => { if (armazem.db === db) armazem.db = null; };
-    db.onversionchange = () => { try { db.close(); } catch (e) { /* ok */ } esquecer(); };
+    db.onversionchange = (ev) => {
+      // newVersion null = alguém está apagando o banco: não reabrir mais
+      if (ev && ev.newVersion === null) apagando = true;
+      try { db.close(); } catch (e) { /* ok */ }
+      esquecer();
+    };
     db.onclose = esquecer;
     return db;
   }
 
+  // "Sair e apagar deste aparelho" em curso (nesta aba ou em outra): nada mais
+  // é gravado no aparelho nem pedido ao Drive, para o banco não ser recriado.
+  let apagando = false;
+  const erroApagando = () => { const e = new Error("apagando os dados deste aparelho"); e.name = "Apagando"; return e; };
+
   let reabrindo = null;
   function reabrirIndexedDB() {
+    if (apagando) return Promise.reject(erroApagando());
     if (!reabrindo) {
       reabrindo = abrirIndexedDB().then((db) => { armazem.db = prepararDb(db); })
         .finally(() => { reabrindo = null; });
@@ -203,6 +216,7 @@
   // fn recebe a loja e devolve um pedido, uma lista de pedidos ou nada.
   // A transação é criada na hora: isso mantém a ordem das escritas.
   function operar(loja, modo, fn) {
+    if (apagando) return Promise.reject(erroApagando());
     if (armazem.memoria) {
       try { return Promise.resolve(lerResultado(fn(lojaMemoria(armazem.memoria[loja])))); }
       catch (e) { return Promise.reject(e); }
@@ -323,6 +337,12 @@
     if (v.anexos && typeof v.anexos === "object") meta.anexos = Object.assign({}, meta.anexos, v.anexos);
     if (Array.isArray(v.lixeira)) meta.lixeira = v.lixeira.slice(); // o armazém manda (mexerLixeira)
     if (Array.isArray(v.ignorados)) meta.ignorados = Array.from(new Set(meta.ignorados.concat(v.ignorados)));
+    if (v.resumo && typeof v.resumo === "object") {
+      // outra aba pode ter atualizado o resumo: fica o mais recente
+      // (desconectar grava {quando} sem id: também vale, para esquecer o resumo da conta antiga)
+      const a = meta.resumo || {}, b = v.resumo;
+      if (typeof b.quando === "number" ? b.quando >= (a.quando || 0) : !a.id) meta.resumo = Object.assign({}, b);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -901,9 +921,9 @@
     ls.apagar(CHAVE.nome);
     ls.apagar(CHAVE.state);
     // esquece o que é da conta; os dados locais ficam
-    meta.pastas = {}; meta.md5 = {}; meta.anexos = {}; meta.ultimoPull = null; meta.ignorados = [];
-    mapaConferido = false; pastasConferidas = false; faltas.clear(); anexosNaLixeira.clear();
-    salvarMeta("pastas", "md5", "anexos", "ultimoPull", "ignorados").catch(() => {});
+    meta.pastas = {}; meta.md5 = {}; meta.anexos = {}; meta.ultimoPull = null; meta.ignorados = []; meta.resumo = { quando: agora() };
+    mapaConferido = false; pastasConferidas = false; puxouNestaSessao = false; faltas.clear(); anexosNaLixeira.clear();
+    salvarMeta("pastas", "md5", "anexos", "ultimoPull", "ignorados", "resumo").catch(() => {});
     erroAtual = null;
     atualizarEstado();
   }
@@ -973,7 +993,7 @@
   async function api(metodoHttp, caminho, op) {
     op = op || {};
     for (let tentativa = 1; ; tentativa++) {
-      if (!token) throw erro("sem_token", "Sem login.");
+      if (apagando || !token) throw erro("sem_token", "Sem login.");
       const url = op.url || (API + (op.upload ? "/upload/drive/v3/" : "/drive/v3/") + caminho + montarQuery(op.query));
       const cab = Object.assign({ Authorization: "Bearer " + token.access_token }, op.cabecalhos || {});
       let corpo = op.corpo;
@@ -1411,6 +1431,33 @@
     await salvarMeta("anexos");
   }
 
+  // Anexo citado por registro vivo que não está no mapa nem na fila deste aparelho
+  // (veio de outro aparelho depois que o mapa foi conferido). Quem já faltou há
+  // menos de 10 min não conta, para não listar o Drive a cada sincronização.
+  function faltaNoMapa() {
+    for (const r of docs.values()) {
+      if (r.apagado || !r.dados) continue;
+      const ids = [];
+      if (Array.isArray(r.dados.arquivos)) for (const a of r.dados.arquivos) if (a && typeof a.id === "string") ids.push(a.id);
+      if (typeof r.dados.fotoId === "string") ids.push(r.dados.fotoId);
+      for (const aid of ids) {
+        if (!ID_OK.test(aid) || meta.anexos[aid] || filaEnvio.has(aid)) continue;
+        const quando = faltas.get(aid);
+        if (quando && agora() - quando < 600000) continue;
+        return true;
+      }
+    }
+    return false;
+  }
+  // depois de listar: quem continua faltando fica anotado (ver faltaNoMapa)
+  function anotarFaltas() {
+    for (const r of docs.values()) {
+      if (r.apagado || !r.dados) continue;
+      const ids = (Array.isArray(r.dados.arquivos) ? r.dados.arquivos.map((a) => a && a.id) : []).concat([r.dados.fotoId]);
+      for (const aid of ids) if (typeof aid === "string" && ID_OK.test(aid) && !meta.anexos[aid] && !filaEnvio.has(aid) && !faltas.has(aid)) faltas.set(aid, agora());
+    }
+  }
+
   // Ids de anexo citados por algum registro vivo (ids de 22 caracteres aleatórios)
   function textoDosRegistros() {
     const partes = [];
@@ -1601,10 +1648,12 @@
       }
       meta.ultimoPull = agora();
       await salvarMeta("ultimoPull");
+      puxouNestaSessao = true;
       await limparSemBase();
       resolverPrimeiroPull();
       // Uma vez por sessão (ou se as pastas mudaram): confere se os anexos ainda estão no Drive
-      if (!mapaConferido || pastasMudaram || filaEnvio.size) await atualizarMapaAnexos();
+      // ...ou se chegou de outro aparelho um anexo que este ainda não conhece (links do resumo)
+      if (!mapaConferido || pastasMudaram || filaEnvio.size || faltaNoMapa()) { await atualizarMapaAnexos(); anotarFaltas(); }
       if (mapaFresco || anexosNaLixeira.size) {
         const antes = filaEnvio.size;
         await reconciliarAnexos(pastas);
@@ -1683,6 +1732,22 @@
   }
 
   async function aoAvisoDeOutraAba(msg) {
+    if (msg && (msg.tipo === "apagando" || msg.tipo === "apagado") && msg.aba !== ABA) {
+      // outra aba está apagando tudo deste aparelho: para de gravar e solta o banco
+      apagando = true;
+      token = null;
+      if (agendado) clearTimeout(agendado);
+      if (relogio) clearInterval(relogio);
+      agendado = relogio = null;
+      try { if (armazem.db) armazem.db.close(); } catch (e) { /* ok */ }
+      armazem.db = null;
+      // quando terminar, recomeça vazia
+      if (msg.tipo === "apagado") {
+        parar();
+        try { if (G.location && typeof G.location.reload === "function") G.location.reload(); } catch (e) { /* ok */ }
+      }
+      return;
+    }
     if (!msg || msg.tipo !== "mudou" || msg.aba === ABA || armazem.memoria) return;
     await prontoPromessa;
     token = lerToken();
@@ -1719,7 +1784,8 @@
       erro: erroAtual ? { code: erroAtual.code, mensagem: erroAtual.mensagem } : null,
       metodo,
       armazenamentoLocal: armazem.tipo,
-      pastaId: (meta.pastas && meta.pastas.raiz) || null
+      pastaId: (meta.pastas && meta.pastas.raiz) || null,
+      puxouNestaSessao
     };
   }
 
@@ -1761,6 +1827,205 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Resumo para a família: um Google Doc na pasta principal do app, refeito a
+  // partir de um HTML que o app monta. Quem recebe a pasta compartilhada lê pelo
+  // Google Drive, sem o app e sem a senha do dono.
+  // ---------------------------------------------------------------------------
+  const DOC_MIME = "application/vnd.google-apps.document";
+  const RESUMO_Q = "appProperties has {key='app' and value='prontuario'} and appProperties has {key='papel' and value='resumo'} and trashed=false";
+  const urlResumo = (id) => "https://docs.google.com/document/d/" + id + "/edit";
+  const encId = (id) => encodeURIComponent(id);
+  let filaResumo = Promise.resolve();
+
+  // Um de cada vez nesta aba; entre abas, pela trava do navegador
+  function salvarResumo(html, opcoes) {
+    const fazer = () => salvarResumoAgora(html, opcoes || {});
+    const locks = G.navigator && G.navigator.locks;
+    const p = filaResumo.then(() => (locks && typeof locks.request === "function" ? locks.request("prontuario-resumo", fazer) : fazer()));
+    filaResumo = p.catch(() => {});
+    return p;
+  }
+
+  // O resumo que vale: o mais antigo dentro da pasta principal. Cópias a mais
+  // (dois aparelhos criando ao mesmo tempo) vão para a lixeira.
+  async function acharResumo(raiz) {
+    const lista = (await listarTudo(RESUMO_Q, "id,parents,createdTime,mimeType"))
+      .filter((f) => f.mimeType === DOC_MIME && (f.parents || []).includes(raiz)).sort(porIdade);
+    const conhecido = meta.resumo && meta.resumo.id;
+    // a busca do Drive pode atrasar: o id guardado é conferido direto
+    if (!lista.length && conhecido) {
+      try {
+        const f = await api("GET", "files/" + encId(conhecido), { query: { fields: "id,parents,trashed,mimeType,createdTime" } });
+        if (f && !f.trashed && f.mimeType === DOC_MIME && (f.parents || []).includes(raiz)) lista.push(f);
+      } catch (e) { if (e.code !== "nao_encontrado") throw e; }
+    }
+    // o documento que este aparelho já usa vem na frente (o link não muda à toa)
+    if (conhecido) lista.sort((a, b) => (b.id === conhecido) - (a.id === conhecido) || porIdade(a, b));
+    for (const extra of lista.slice(1)) {
+      try { await api("PATCH", "files/" + encId(extra.id), { query: { fields: "id" }, json: { trashed: true } }); }
+      catch (e) { if (e.code === "login" || e.code === "offline") throw e; }
+    }
+    return lista.length ? lista[0].id : null;
+  }
+
+  async function criarResumo(nome, corpo, raiz) {
+    const metadados = { name: nome, mimeType: DOC_MIME, parents: [raiz], appProperties: { app: "prontuario", papel: "resumo" } };
+    const f = "prontuario_" + aleatorio(16, ALFA_NUM);
+    const multipart = new Blob([
+      "--" + f + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadados) +
+      "\r\n--" + f + "\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n",
+      corpo,
+      "\r\n--" + f + "--"
+    ]);
+    const r = await api("POST", "files", {
+      upload: true, query: { uploadType: "multipart", fields: "id" },
+      corpo: multipart, cabecalhos: { "Content-Type": "multipart/related; boundary=" + f }
+    });
+    if (!r || !r.id) throw erro("drive", "O Google Drive não aceitou o resumo.");
+    return r.id;
+  }
+
+  const errosQueParam = (e) => !!e && (e.code === "login" || e.code === "offline" || e.code === "cota" || e.code === "sem_token");
+
+  async function salvarResumoAgora(html, op) {
+    if (!CONFIGURADO || !tokenValido()) throw erro("login", "Conecte o Google Drive primeiro.");
+    const nome = String(op.nome || "Resumo de saúde").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 120) || "Resumo de saúde";
+    const corpo = new Blob([String(html == null ? "" : html)], { type: "text/html" });
+    try {
+      await prontoPromessa;
+      // outra aba pode ter acabado de enviar este mesmo resumo
+      try {
+        const salvo = await operar("meta", "readonly", (s) => s.get("resumo"));
+        if (salvo && typeof salvo === "object") aplicarMeta(CHAVES_META.map((k) => (k === "resumo" ? salvo : undefined)));
+      } catch (e) { /* segue com a memória */ }
+      const atual = meta.resumo || {};
+      if (!op.forcar && typeof op.hash === "string" && atual.id && atual.hash === op.hash && atual.nome === nome) {
+        return { id: atual.id, url: urlResumo(atual.id) };
+      }
+      const pastas = await garantirPastas();
+      let id = await acharResumo(pastas.raiz);
+      let nomeSalvo = nome;
+      if (id) {
+        let trocou = false;
+        try {
+          // troca o conteúdo do mesmo documento (o link continua o mesmo)
+          await api("PATCH", "files/" + encId(id), {
+            upload: true, query: { uploadType: "media", fields: "id" },
+            corpo, cabecalhos: { "Content-Type": "text/html; charset=UTF-8" }
+          });
+          trocou = true;
+        } catch (e) {
+          // erro passageiro (rede, 5xx, login): tenta de novo depois no mesmo documento
+          const recusado = e && (e.code === "nao_encontrado" || e.code === "sem_permissao" ||
+            (e.code === "drive" && typeof e.status === "number" && e.status >= 400 && e.status < 500));
+          if (!recusado) throw e;
+          // o Google não deixou trocar o conteúdo: cria outro e põe o antigo na lixeira
+          avisarConsole("não consegui atualizar o resumo; criando outro", e);
+          const velho = id;
+          id = await criarResumo(nome, corpo, pastas.raiz);
+          try { await api("PATCH", "files/" + encId(velho), { query: { fields: "id" }, json: { trashed: true } }); }
+          catch (x) { if (errosQueParam(x)) throw x; }
+        }
+        if (trocou && (atual.nome !== nome || atual.id !== id)) {
+          // renomear é à parte: se falhar, o conteúdo novo continua valendo
+          try { await api("PATCH", "files/" + encId(id), { query: { fields: "id" }, json: { name: nome } }); }
+          catch (e) {
+            if (errosQueParam(e)) throw e;
+            avisarConsole("não consegui renomear o resumo", e);
+            nomeSalvo = atual.id === id ? atual.nome || null : null; // tenta de novo na próxima
+          }
+        }
+      } else {
+        id = await criarResumo(nome, corpo, pastas.raiz);
+      }
+      meta.resumo = { id, hash: typeof op.hash === "string" ? op.hash : null, nome: nomeSalvo, quando: agora() };
+      await salvarMeta("resumo");
+      avisarAbas([], false, false); // as outras abas releem a meta
+      atualizarEstado();
+      return { id, url: urlResumo(id) };
+    } catch (e) {
+      throw traduzirErro(e) || erro("login", MSG.login);
+    }
+  }
+
+  function infoResumo() {
+    const r = meta.resumo || {};
+    if (!r.id || !ID_OK.test(String(r.id))) return null;
+    return { id: r.id, hash: r.hash || null, nome: r.nome || null, quando: typeof r.quando === "number" ? r.quando : null, url: urlResumo(r.id) };
+  }
+
+  // Link do anexo no Drive (para o resumo). null se ainda não subiu.
+  function linkAnexo(aid) {
+    const id = typeof aid === "string" && Object.prototype.hasOwnProperty.call(meta.anexos, aid) ? meta.anexos[aid] : null;
+    return id && ID_OK.test(String(id)) ? "https://drive.google.com/file/d/" + id + "/view" : null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sair e apagar deste aparelho (para quando usar o aparelho de outra pessoa).
+  // Os dados continuam no Google Drive. Não revoga no Google (ver desconectar).
+  // ---------------------------------------------------------------------------
+  // "ok" quando o navegador confirma; "bloqueado" se outra aba segurar o banco
+  // até o prazo; "erro" se o navegador recusar.
+  function apagarBanco() {
+    return new Promise((ok) => {
+      let pedido;
+      try { pedido = G.indexedDB ? G.indexedDB.deleteDatabase("prontuario-drive") : null; } catch (e) { ok("erro"); return; }
+      if (!pedido) { ok("ok"); return; } // sem IndexedDB: não há banco
+      let bloqueado = false;
+      const fim = setTimeout(() => ok(bloqueado ? "bloqueado" : "erro"), 10000);
+      pedido.onsuccess = () => { clearTimeout(fim); ok("ok"); };
+      pedido.onerror = () => { clearTimeout(fim); ok("erro"); };
+      pedido.onblocked = () => { bloqueado = true; }; // espera as outras abas soltarem
+    });
+  }
+
+  function apagarChavesLocais() {
+    try {
+      const st = G.localStorage;
+      if (!st) return;
+      const chaves = [];
+      for (let i = 0; i < st.length; i++) {
+        const k = st.key(i);
+        if (k && k.startsWith("prontuario.")) chaves.push(k);
+      }
+      for (const k of chaves) ls.apagar(k);
+    } catch (e) { /* bloqueado */ }
+  }
+
+  async function esquecerAparelho() {
+    // daqui em diante nada grava no aparelho nem chama o Drive (nem o que já está em curso)
+    apagando = true;
+    if (agendado) clearTimeout(agendado);
+    agendado = null;
+    // 1ª fase: as outras abas param de gravar e soltam o banco (sem recarregar ainda)
+    try { if (canal) canal.postMessage({ tipo: "apagando", aba: ABA }); } catch (e) { /* ok */ }
+    if (relogio) clearInterval(relogio);
+    relogio = null;
+    // o que está em curso termina sem gravar (operar e api recusam)
+    try { await Promise.race([Promise.all([rodada, filaResumo].map((p) => Promise.resolve(p).catch(() => {}))), esperar(5000)]); } catch (e) { /* ok */ }
+    token = null;
+    erroAtual = null;
+    docs.clear();
+    filaEnvio.clear();
+    for (const id of Array.from(urls.keys())) liberarUrl(id);
+    Object.assign(meta, { ultimoPull: null, ultimaSync: null, md5: {}, pastas: {}, anexos: {}, lixeira: [], ignorados: [], resumo: {} });
+    try { if (armazem.db) armazem.db.close(); } catch (e) { /* ok */ }
+    armazem.db = null;
+    if (armazem.memoria) armazem.memoria = { docs: new Map(), blobs: new Map(), meta: new Map() };
+    apagarChavesLocais();
+    const r = await apagarBanco();
+    apagarChavesLocais(); // alguma escrita atrasada pode ter voltado
+    // 2ª fase: o banco já foi apagado; as outras abas recarregam vazias
+    try { if (canal) canal.postMessage({ tipo: "apagado", aba: ABA }); } catch (e) { /* ok */ }
+    parar();
+    if (r !== "ok") {
+      throw erro("apagar", r === "bloqueado"
+        ? "Não consegui apagar tudo: o app está aberto em outra aba ou janela. Feche as outras e tente de novo."
+        : "O navegador não deixou apagar os dados do app. Tente de novo, ou apague os dados do site nas configurações do navegador.");
+    }
+  }
+
   const controle = {
     estado,
     on: aoEvento,
@@ -1770,7 +2035,11 @@
     definirMetodo,
     pastaUrl: () => (meta.pastas && meta.pastas.raiz ? "https://drive.google.com/drive/folders/" + meta.pastas.raiz : null),
     salvarArquivo,
-    compartilhar: (blob, nome) => entregarArquivo(nome, blob)
+    compartilhar: (blob, nome) => entregarArquivo(nome, blob),
+    salvarResumo,
+    resumo: infoResumo,
+    linkAnexo,
+    apagarDoAparelho: esquecerAparelho
   };
 
   const capacidades = {

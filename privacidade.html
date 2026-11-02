@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacidade · Prontuário da Princesa</title>
+<style>
+  :root { --bg: #F6F3FA; --card: #FFFFFF; --fg: #2B2333; --muted: #6B6076; --accent: #8A3FB5; --line: #E6DFEE; color-scheme: light; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1B1620; --card: #241E2B; --fg: #EFE9F4; --muted: #B3A8BE; --accent: #C58BE8; --line: #3A3142; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+         padding: 32px max(16px, env(safe-area-inset-right, 0px)) 48px max(16px, env(safe-area-inset-left, 0px)); }
+  main { max-width: 680px; margin: 0 auto; background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 28px 24px; }
+  h1 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 4px; color: var(--accent); text-wrap: balance; }
+  h2 { font-size: 1.1rem; margin: 28px 0 6px; }
+  p, li { color: var(--fg); }
+  .data { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  a { color: var(--accent); }
+  ul { padding-left: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Política de privacidade do Prontuário da Princesa</h1>
+  <p class="data">Atualizada em 2 de novembro de 2026</p>
+
+  <p>O Prontuário da Princesa é um aplicativo pessoal, feito para uma única pessoa organizar os exames,
+  vacinas, remédios, lembretes e o peso da sua cachorrinha. Ele não é oferecido ao público.</p>
+
+  <h2>Quais dados o app usa</h2>
+  <p>Só os dados que você mesmo cadastra no app: a ficha do animal, os registros de saúde e os arquivos
+  que você anexa (como PDFs de laudos e fotos).</p>
+
+  <h2>Onde os dados ficam</h2>
+  <ul>
+    <li>No seu aparelho, para o app funcionar sem internet.</li>
+    <li>No <strong>seu</strong> Google Drive, numa pasta chamada “Prontuário da Princesa”.</li>
+  </ul>
+  <p>Não existe servidor do app. Ninguém além de você recebe ou guarda esses dados.
+  Este site só entrega o programa; ele não recebe nenhuma informação sua.</p>
+
+  <h2>Acesso ao Google Drive</h2>
+  <p>O app pede ao Google apenas a permissão <code>drive.file</code>. Com ela, o app só enxerga
+  os arquivos que ele mesmo criou. Ele não lê, não altera e não apaga nenhum outro arquivo do seu Drive.
+  Os dados do Google não são vendidos, compartilhados nem usados para publicidade ou para treinar inteligência artificial.</p>
+
+  <h2>Como apagar tudo</h2>
+  <ul>
+    <li>Para tirar os dados de um aparelho, desinstale o app ou apague os dados do site no navegador.</li>
+    <li>No Google Drive, apague a pasta “Prontuário da Princesa”.</li>
+    <li>Para tirar o acesso do app à sua conta, vá em
+      <a href="https://myaccount.google.com/connections">myaccount.google.com/connections</a>.</li>
+  </ul>
+
+  <h2>Contato</h2>
+  <p>O app pertence ao dono da conta do GitHub <strong>mauriciiio</strong>:
+  <a href="https://github.com/mauriciiio">github.com/mauriciiio</a>.</p>
+
+  <p><a href="./">← Voltar para o app</a></p>
+</main>
+</body>
+</html>

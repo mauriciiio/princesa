@@ -2,7 +2,7 @@
    Guarda o "casco" do app para abrir sem internet. Os dados NÃO passam por aqui:
    ficam no IndexedDB (drive.js) e no Google Drive.
    As duas linhas VERSAO e ARQUIVOS são reescritas pelo build.py. */
-const VERSAO = "abc5a870ce29";
+const VERSAO = "93f8476784f0";
 const ARQUIVOS = ["./index.html", "./config.js", "./drive.js", "./icons/apple-touch-icon-180.png", "./icons/favicon-32.png", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/maskable-192.png", "./icons/maskable-512.png", "./manifest.webmanifest", "./vendor/pdfjs/pdf.min.js", "./vendor/pdfjs/pdf.worker.min.js", "./vendor/qrcode/qrcode.min.js"];
 
 const CASCO = "casco-" + VERSAO;

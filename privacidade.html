@@ -38,8 +38,8 @@
     <li>No seu aparelho, para o app funcionar sem internet.</li>
     <li>No <strong>seu</strong> Google Drive, numa pasta chamada “Prontuário da Princesa”.</li>
   </ul>
-  <p>Não existe servidor do app. Ninguém além de você recebe ou guarda esses dados.
-  Este site só entrega o programa; ele não recebe nenhuma informação sua.</p>
+  <p>Não existe servidor do app. Este site só entrega o programa; ele não recebe nenhuma informação sua.
+  A única exceção é a conferência com IA, que é opcional (veja abaixo).</p>
 
   <h2>Acesso ao Google Drive</h2>
   <p>O app pede ao Google apenas a permissão <code>drive.file</code>. Com ela, o app só enxerga
@@ -53,6 +53,13 @@
   <p>Cada pessoa recebe o seu link, e o dono pode desligar cada um a qualquer momento. Quem abre um link não precisa
   de conta, e nada fica guardado no aparelho dessa pessoa. O app não registra quem abriu nem quando.
   O app nunca cria um link sozinho: quem decide é o dono.</p>
+
+  <h2>Conferência dos laudos com IA (opcional)</h2>
+  <p>Se o dono cadastrar no próprio aparelho uma chave da API do Claude, ao anexar um laudo o app envia o PDF ou a foto
+  desse laudo à <strong>Anthropic</strong> (empresa do Claude) para conferir a leitura dos valores. Isso só acontece no aparelho
+  onde a chave foi cadastrada, e só quando um laudo é lido. A chave fica guardada apenas nesse aparelho: ela não vai para o
+  Google Drive nem para os links de compartilhamento. Pelos termos da Anthropic para a API, os dados enviados não são usados, por padrão,
+  para treinar os modelos. Para desligar, use <strong>Ficha → Google Drive → Testar ou remover a chave</strong>.</p>
 
   <h2>Como apagar tudo</h2>
   <ul>

@@ -551,17 +551,20 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 
 
 /* Formulários */
 .form { display: grid; gap: 18px; }
+.passos { margin: 0; padding-left: 1.5em; display: grid; gap: 6px; line-height: 1.45; list-style: decimal; }
+.passos li::marker { color: var(--ink-2); font-weight: 650; }
+.passos b { font-weight: 650; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 14px; }
 .field { display: grid; gap: 6px; min-width: 0; align-content: start; }
 .lbl, .field > label { font-family: var(--f-body); font-size: 13.5px; font-weight: 700; color: var(--ink-2); }
 .req { color: var(--bad-ink); }
-input[type="text"], input[type="date"], input[type="search"], input[type="number"], select, textarea {
+input[type="text"], input[type="password"], input[type="date"], input[type="search"], input[type="number"], select, textarea {
   font: inherit; font-size: 15px; color: var(--ink); background: var(--card);
   border: 1.5px solid var(--rule-2); border-radius: var(--r-ctl); padding: 10px 14px; width: 100%; min-width: 0; min-height: 46px;
 }
 textarea { resize: vertical; min-height: 92px; line-height: 1.45; }
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent-wash); outline-offset: 0; border-color: var(--accent); }
-@media (max-width: 899px) { input[type="text"], input[type="date"], input[type="search"], input[type="number"], select, textarea { font-size: 16px; } }
+@media (max-width: 899px) { input[type="text"], input[type="password"], input[type="date"], input[type="search"], input[type="number"], select, textarea { font-size: 16px; } }
 .fhint { font-size: 12.5px; color: var(--ink-3); }
 .quickd { display: flex; gap: 6px; flex-wrap: wrap; }
 .fsec { display: grid; gap: 10px; min-width: 0; border: 0; padding: 0; margin: 0; }
@@ -942,7 +945,29 @@ const intervalo = () => { const n = Number(S.pet?.intervaloMeses); return n >= 1
 const ativo = r => !parseISO(r.fim) || r.fim >= hoje();
 
 function statusOf(v) {
-  if (!ehNum(v?.valor)) return "na";
+  if (!ehNum(v?.valor)) {
+    const t = String(v?.texto || "").trim();
+    /* "> 1,050" com referência até 1,046: acima; "< 0,1" com mínimo 0,2: abaixo */
+    const m = /^([<>]=?|[≤≥])\s*(\d+(?:[.,]\d+)*)/.exec(t);
+    if (m) {
+      const n = numLinha(m[2], v.nome), mn = num(v.refMin), mx = num(v.refMax);
+      if (n != null && /[>≥]/.test(m[1]) && mx != null && n >= mx) return "alto";
+      if (n != null && /[<≤]/.test(m[1]) && mn != null && n <= mn) return "baixo";
+    }
+    /* faixa como resultado ("0 a 2" por campo) com referência numérica */
+    const fx = /^(\d+(?:[.,]\d+)?)\s*a\s*(\d+(?:[.,]\d+)?)\b/.exec(t);
+    if (fx) {
+      const x = parseNum(fx[1]), y = parseNum(fx[2]), mn = num(v.refMin), mx = num(v.refMax);
+      if (x != null && y != null && (mn != null || mx != null)) {
+        if (mx != null && y > mx) return "alto";
+        if (mn != null && y < mn) return "baixo";
+        return "ok";
+      }
+    }
+    /* resultado escrito igual à referência escrita ("Ausente" / "Ausente") */
+    if (t && v?.refTexto && norm(t) === norm(v.refTexto)) return "ok";
+    return "na";
+  }
   const mn = num(v.refMin), mx = num(v.refMax);
   if (mn == null && mx == null) return "sem";
   if (mn != null && v.valor < mn) return "baixo";
@@ -952,6 +977,7 @@ function statusOf(v) {
 const fora = st => st === "alto" || st === "baixo";
 function refTxt(v) {
   const mn = num(v.refMin), mx = num(v.refMax);
+  if (mn == null && mx == null && v.refTexto) return "Ref. " + String(v.refTexto);
   if (mn != null && mx != null) return "Ref. " + fmtNum(mn) + " – " + fmtNum(mx);
   if (mx != null) return "Ref. até " + fmtNum(mx);
   if (mn != null) return "Ref. a partir de " + fmtNum(mn);
@@ -988,7 +1014,7 @@ function calcAnalitos(exames) {
       if (!a) { a = { key, nome: v.nome, pts: [] }; map.set(key, a); }
       a.pts.push({
         data: e.data, valor: ehNum(v.valor) && !(key === "peso" && v.valor <= 0) ? v.valor : null, texto: v.texto || null, unidade: v.unidade || (key === "peso" ? "kg" : ""),
-        refMin: num(v.refMin), refMax: num(v.refMax), examId: e.id, exame: e.titulo || TIPO[e.tipo]?.nome || "Exame",
+        refMin: num(v.refMin), refMax: num(v.refMax), refTexto: v.refTexto || null, examId: e.id, exame: e.titulo || TIPO[e.tipo]?.nome || "Exame",
         clinica: e.clinica || "", nomeOrig: v.nome,
       });
     }
@@ -1014,7 +1040,7 @@ function calcAnalitos(exames) {
     a.serie = a.pts.filter(p => p.valor != null && parseISO(p.data) && mesma(p)).map(p => Object.assign({}, p, { vb: p.valor * escalaUnid(p.unidade).fator / base.fator }));
     a.outrasUnid = a.pts.filter(p => p.valor != null && !mesma(p)).length;
     a.ultimo = ult;
-    a.status = ult.valor != null ? statusOf(ult) : "na";
+    a.status = statusOf(ult);
     a.ref = ultNum ? { min: ultNum.refMin, max: ultNum.refMax } : { min: null, max: null };
     out.push(a);
   }
@@ -1179,7 +1205,7 @@ function foraCard() {
   if (!d.analitos.length) body = '<p class="empty">' + (carregou("exames") || S.conn === "none" ? "Quando os exames tiverem valores, os que estiverem fora da referência aparecem aqui." : "Carregando…") + "</p>";
   else if (!lst.length) body = '<p class="allok">' + I.check + "<span>Todos os valores mais recentes estão dentro da referência.</span></p>";
   else body = '<ul class="alist">' + lst.slice(0, 6).map(a =>
-    '<li><button class="arow" data-act="goto-analito" data-key="' + esc(a.key) + '"><span class="arow-n">' + esc(a.nome) + '</span><span class="arow-v"><b>' + esc(fmtNum(a.ultimo.valor)) + "</b> " + esc(a.ultimo.unidade) + "</span>" + flagHTML(a.status) +
+    '<li><button class="arow" data-act="goto-analito" data-key="' + esc(a.key) + '"><span class="arow-n">' + esc(a.nome) + '</span><span class="arow-v"><b>' + esc(ehNum(a.ultimo.valor) ? fmtNum(a.ultimo.valor) : (a.ultimo.texto || "—")) + "</b> " + esc(a.ultimo.unidade) + "</span>" + flagHTML(a.status) +
     '<span class="arow-r">' + esc(refTxt(a.ultimo)) + " · " + esc(fmtData(a.ultimo.data)) + "</span></button></li>").join("") + "</ul>" +
     (lst.length > 6 ? '<button class="link" data-act="tab" data-tab="evolucao">Ver todos os ' + lst.length + "</button>" : "");
   return '<section class="card"><div class="card-h"><h2 class="ch">Fora da referência</h2><span class="hint">no exame mais recente de cada valor</span></div>' + body + "</section>";
@@ -1311,7 +1337,7 @@ function vlineHTML(v) {
   const val = ehNum(v.valor) ? "<b>" + esc(fmtNum(v.valor)) + "</b>" : '<b class="txt">' + esc(v.texto || "—") + "</b>";
   return '<li class="vline"><button class="vl-n" data-act="goto-analito" data-key="' + esc(chaveAnalito(v.nome)) + '">' + esc(v.nome) + "</button>" +
     '<span class="vl-v">' + val + ' <span class="u">' + esc(v.unidade || "") + "</span></span>" +
-    '<span class="vl-r">' + rbarHTML(v) + '<span class="vl-rt">' + esc(ehNum(v.valor) ? refTxt(v) : "") + "</span></span>" +
+    '<span class="vl-r">' + rbarHTML(v) + '<span class="vl-rt">' + esc(ehNum(v.valor) || v.refTexto || ehNum(num(v.refMin)) || ehNum(num(v.refMax)) ? refTxt(v) : "") + "</span></span>" +
     '<span class="vl-f">' + flagHTML(st) + "</span></li>";
 }
 function fileTileHTML(a) {
@@ -1467,7 +1493,12 @@ function valorNaUnidade(l, v) {
 }
 function celulaHTML(l, v) {
   if (!v) return '<td class="vazio">—</td>';
-  if (!ehNum(v.valor)) return '<td class="txt">' + esc(v.texto || "—") + "</td>";
+  if (!ehNum(v.valor)) {
+    const stt = statusOf(v);
+    const clt = stt === "alto" ? " c-hi" : stt === "baixo" ? " c-lo" : "";
+    const set = stt === "alto" ? '<span aria-hidden="true">↑ </span>' : stt === "baixo" ? '<span aria-hidden="true">↓ </span>' : "";
+    return '<td class="txt' + clt + '">' + set + esc(v.texto || "—") + (fora(stt) ? '<span class="sr"> (' + esc(SIT[stt].toLowerCase()) + ")</span>" : "") + "</td>";
+  }
   const st = statusOf(v), c = valorNaUnidade(l, v);
   const cls = st === "alto" ? " c-hi" : st === "baixo" ? " c-lo" : "";
   const seta = st === "alto" ? '<span aria-hidden="true">↑ </span>' : st === "baixo" ? '<span aria-hidden="true">↓ </span>' : "";
@@ -2320,7 +2351,7 @@ function abrirFormExame(exame, opcoes = {}) {
     clinica: exame?.clinica || "", veterinario: exame?.veterinario || "", observacoes: exame?.observacoes || "",
     arquivos: (exame?.arquivos || []).map(a => ({ id: a.id, nome: a.nome, tipo: a.tipo, tamanho: a.tamanho })),
     novos: [], removidos: [], pend: [],
-    valores: (exame?.valores || []).filter(v => v && v.nome).map(v => ({ nome: v.nome, valor: ehNum(v.valor) ? numInput(v.valor) : (v.texto || ""), unidade: v.unidade || "", refMin: numInput(num(v.refMin)), refMax: numInput(num(v.refMax)) })),
+    valores: (exame?.valores || []).filter(v => v && v.nome).map(v => ({ nome: v.nome, valor: ehNum(v.valor) ? numInput(v.valor) : (v.texto || ""), unidade: v.unidade || "", refMin: numInput(num(v.refMin)), refMax: numInput(num(v.refMax)), refTexto: v.refTexto || "", nomeOrig: v.nome })),
     /* exame ainda sem valores: a leitura do laudo pode corrigir tipo, data e o resto */
     tocado: new Set(novo ? [] : (exame?.valores || []).some(v => v && v.nome) ? ["tipo", "titulo", "data", "clinica", "veterinario", "observacoes"]
       : ["titulo", "data", "clinica", "veterinario", "observacoes"].filter(k => String(exame?.[k] ?? "").trim() && !(k === "data" && exame.data === String(exame.criadoEm || "").slice(0, 10)))),
@@ -2379,8 +2410,9 @@ function abrirFormExame(exame, opcoes = {}) {
     const temPdf = todos.some(a => tipoArquivo(a.tipo, a.nome) === "pdf");
     const podeImg = comIA && !S.semImagens && !!S.sampleLim?.images;
     const legivel = temPdf || (podeImg && todos.some(a => tipoArquivo(a.tipo, a.nome) === "img"));
-    const titulo = comIA ? "O Claude preenche para você" : "O app lê o PDF para você";
-    const explica = comIA ? "Anexe o PDF ou a foto do laudo. O Claude lê sozinho e preenche o tipo de exame, a data, a clínica, os valores e a conclusão. Confira antes de salvar."
+    const titulo = comIA && MODO_DRIVE ? "O app lê e o Claude confere" : comIA ? "O Claude preenche para você" : "O app lê o PDF para você";
+    const explica = comIA && MODO_DRIVE ? "Anexe o PDF do laudo. O app lê sozinho na hora, e o Claude lê o mesmo PDF para conferir: o que não bater aparece abaixo para você checar no laudo."
+      : comIA ? "Anexe o PDF ou a foto do laudo. O Claude lê sozinho e preenche o tipo de exame, a data, a clínica, os valores e a conclusão. Confira antes de salvar."
       : "Anexe o laudo em PDF. O app lê sozinho o tipo de exame, a data, a clínica, o veterinário e os valores. Confira antes de salvar. Fotos e PDFs escaneados ainda precisam ser preenchidos à mão.";
     const permitir = F.semPermissao ? '<button type="button" class="btn sm ghost" data-f="ia-permitir">Permitir o Claude neste app</button>' : "";
     if (ia.estado !== "lendo" && !legivel) {
@@ -2395,13 +2427,76 @@ function abrirFormExame(exame, opcoes = {}) {
     const notas = ia.notas.length ? '<div class="ai-notes">' + ia.notas.map(n => "<span>" + esc(n) + "</span>").join("") + "</div>" : "";
     const ficha = ia.estado === "ok" && ia.paciente ? '<div class="ai-ficha"><p>Dados do animal no laudo: <b>' + esc(ia.paciente.texto) + '</b></p><button type="button" class="btn sm ghost" data-f="ia-ficha">' + I.card + "Preencher a ficha</button></div>" : "";
     const botao = ia.estado === "lendo" ? '<button type="button" class="btn sm ghost" data-f="ia-parar">Parar</button>'
-      : '<button type="button" class="btn sm ai" data-f="ia-ler">' + I.sparkle + (ia.estado === "ok" ? "Ler de novo" : ia.estado === "erro" ? "Tentar de novo" : comIA ? "Ler com o Claude" : "Ler o PDF") + "</button>";
+      : '<button type="button" class="btn sm ai" data-f="ia-ler">' + I.sparkle + (ia.estado === "ok" ? (comIA && MODO_DRIVE ? "Ler e conferir de novo" : "Ler de novo") : ia.estado === "erro" ? "Tentar de novo" : comIA && MODO_DRIVE ? "Ler e conferir com o Claude" : comIA ? "Ler com o Claude" : "Ler o PDF") + "</button>";
     el.innerHTML = '<div class="ai-box">' + I.sparkle + "<div><b>" + esc(titulo) + "</b><p>" + esc(explica) + "</p></div>" +
       '<div class="row-btns">' + botao + permitir + "</div>" + st + notas + ficha + "</div>";
   };
   aoMudarCap.add(desenharIA);
+  /* com a chave da IA no app do celular/computador: o app lê e o Claude confere */
+  const lerEConferir = async (ctl, status) => {
+    const todos = fontes();
+    let auto = null, rAuto = null, obsAntes = F.observacoes, obsDepois = F.observacoes;
+    const cab0 = { tipo: F.tipo, titulo: F.titulo, data: F.data, clinica: F.clinica, veterinario: F.veterinario };
+    if (todos.some(f => tipoArquivo(f.tipo, f.nome) === "pdf")) {
+      status("Lendo o PDF…");
+      try { auto = await extrairSemIA(todos, ctl.signal, status); }
+      catch (e) { if (e?.code === "cancelled" || e?.code === "fetch") throw e; auto = null; }
+      if (auto && !j.fechada) { obsAntes = F.observacoes; rAuto = aplicarExtracao(F, auto.dados); obsDepois = F.observacoes; F.mudou = true; preencherCampos(); desenharLinhas(); }
+    }
+    status("O Claude está conferindo o laudo… (pode levar um minuto)");
+    let ia = null, falhou = null;
+    try { ia = await extrairComClaude(fontes(), F.valores, ctl.signal, status); }
+    catch (e) {
+      /* Parar no meio: o que a leitura automática preencheu fica, com o aviso de que não foi conferido */
+      if (e?.code === "cancelled" && !rAuto) throw e;
+      falhou = e;
+    }
+    if (j.fechada) return null;
+    const lidos = rAuto ? rAuto.novos + rAuto.completados : 0;
+    if (!ia) {
+      if (!auto) throw falhou;
+      return { msg: (lidos ? "A leitura automática preencheu " + plural(lidos, "valor", "valores") : "A leitura automática não mudou nada no formulário") + (falhou?.code === "cancelled" ? ", e a conferência com o Claude foi interrompida. Confira com atenção." : ", mas a conferência com o Claude falhou: " + erroIA(falhou) + " Confira com atenção."), notas: auto.notas.concat(rAuto ? rAuto.diferentes.concat(rAuto.avisos) : []), paciente: auto.dados.paciente };
+    }
+    const r = aplicarExtracao(F, ia.dados, auto ? { preenchidas: rAuto ? rAuto.preenchidas : new Set(), obsAntes, obsDepois, cab0, novo: !F.id } : null);
+    /* diferenças que só a leitura automática viu (o Claude não confirmou o formulário) */
+    const difAuto = rAuto ? rAuto.difChaves.filter(d => !r.confirmadas.has(d.k)).map(d => d.nome + ": a leitura automática leu " + d.lido + ", no formulário está " + d.noForm + ".") : [];
+    F.mudou = true;
+    preencherCampos();
+    desenharLinhas();
+    const batem = Math.max(0, r.iguais - r.diferentes.length);
+    const soClaude = r.novos + r.completados, naoVistos = Math.max(0, lidos - r.conferidasAuto), nDif = r.diferentes.length + r.difCab.length + difAuto.length;
+    let msg;
+    if (auto) {
+      msg = (lidos ? "A leitura automática preencheu " + plural(lidos, "valor", "valores") : "A leitura automática não mudou nada no formulário") + ", e o Claude conferiu: " + plural(batem, "bate", "batem") + " com o laudo";
+      const partes = [];
+      if (nDif) partes.push(plural(nDif, "ficou diferente", "ficaram diferentes") + " (veja abaixo e confira no PDF)");
+      if (soClaude) partes.push(plural(soClaude, "valor foi achado", "valores foram achados") + " só pelo Claude");
+      if (naoVistos) partes.push(plural(naoVistos, "valor da leitura automática o Claude não leu", "valores da leitura automática o Claude não leu"));
+      partes.forEach((p, i) => { msg += (i === partes.length - 1 ? ", e " : ", ") + p; });
+      msg += !nDif && !soClaude && !naoVistos && batem ? ". Tudo certo." : ". Confira esses itens no laudo antes de salvar.";
+    } else {
+      msg = "O Claude leu " + plural(r.novos + r.completados, "valor", "valores") + ". Confira antes de salvar.";
+    }
+    return { msg, notas: (auto ? auto.notas : []).concat(rAuto ? rAuto.avisos : [], ia.notas, r.difCab, r.diferentes, difAuto, r.avisos), paciente: ia.dados.paciente || (auto && auto.dados.paciente) };
+  };
   const lerComClaude = async () => {
     if (F.ia.estado === "lendo") return;
+    if (MODO_DRIVE && S.canSample) {
+      const ctl = new AbortController();
+      F.ia = { estado: "lendo", msg: "Preparando os arquivos…", notas: [], ctl };
+      desenharIA();
+      const status = msg => { if (F.ia.ctl === ctl && F.ia.msg !== msg) { F.ia.msg = msg; desenharIA(); } };
+      try {
+        const r = await lerEConferir(ctl, status);
+        if (!r || j.fechada) return;
+        F.ia = { estado: "ok", msg: r.msg, notas: r.notas, ctl: null, paciente: sugestaoFicha(r.paciente, F.data) };
+      } catch (e) {
+        if (j.fechada) return;
+        F.ia = e?.code === "cancelled" ? { estado: "parado", msg: "", notas: [], ctl: null } : { estado: "erro", msg: erroIA(e), notas: e?.notas || [], ctl: null };
+      }
+      desenharIA();
+      return;
+    }
     const ctl = new AbortController();
     F.ia = { estado: "lendo", msg: "Preparando os arquivos…", notas: [], ctl };
     desenharIA();
@@ -2459,7 +2554,10 @@ function abrirFormExame(exame, opcoes = {}) {
         if (r[k].trim() && numLinha(r[k], nome) == null) { mostrarErro(j, "A referência " + txt + " de " + nome + " não é um número."); return; }
       }
       const valor = numLinha(bruto, nome);
-      valores.push({ nome: nome.slice(0, 80), valor, texto: valor == null ? bruto.slice(0, 60) : null, unidade: r.unidade.trim().slice(0, 24), refMin: numLinha(r.refMin, nome), refMax: numLinha(r.refMax, nome) });
+      const vv = { nome: nome.slice(0, 80), valor, texto: valor == null ? bruto.slice(0, 60) : null, unidade: r.unidade.trim().slice(0, 24), refMin: numLinha(r.refMin, nome), refMax: numLinha(r.refMax, nome) };
+      /* a referência escrita só vale para o item lido (renomeou ou pôs números: não vale mais) */
+      if (String(r.refTexto || "").trim() && (!r.nomeOrig || norm(r.nomeOrig) === norm(nome)) && vv.refMin == null && vv.refMax == null) vv.refTexto = String(r.refTexto).trim().slice(0, 40);
+      valores.push(vv);
     }
     /* o que foi conferido é o que será salvo, mesmo que algo mude durante o envio */
     const base = {
@@ -2636,8 +2734,14 @@ function valoresDaLinha(resto, diferencial, rotulo) {
   const depois = m0.index + m0[0].length;
   const faixas = [], usados = [];
   let m;
-  RE_FAIXA.lastIndex = depois;
-  while ((m = RE_FAIXA.exec(t))) { faixas.push({ min: parseNum(m[1]), max: parseNum(m[2]) }); usados.push([m.index, m.index + m[0].length]); }
+  /* referência "< 0,2 Não proteinúrico / 0,2 a 0,5 Limítrofe": o limite é o "< 0,2" */
+  const limLogo = /^\s*(?:[^\d\s<≤]{1,12}\s+)?(?:<|≤|at[ée])\s*\d/i.test(t.slice(depois)) || /proteinur|limitrof|limítrof/i.test(t);
+  RE_FAIXA.lastIndex = limLogo ? t.length : depois;
+  while ((m = RE_FAIXA.exec(t))) {
+    /* "60 a 77 %" é a faixa relativa; "3000 a 11500 /mm³" a absoluta */
+    faixas.push({ min: parseNum(m[1]), max: parseNum(m[2]), pct: /^\s*%/.test(t.slice(m.index + m[0].length)) });
+    usados.push([m.index, m.index + m[0].length]);
+  }
   RE_FAIXA.lastIndex = 0;
   const nums = [{ v: parseNum(m0[2]), i: m0.index }];
   const reN = /(?<![\p{L}\d.,\/])(\d+(?:[.,]\d+)*)(?![\p{L}\d])/gu;
@@ -2651,7 +2755,9 @@ function valoresDaLinha(resto, diferencial, rotulo) {
   if (diferencial && nums.length >= 2) {
     valor = nums[1].v;
     /* com só uma faixa, ela costuma ser a relativa (%) */
-    f = faixas.length >= 2 ? faixas[faixas.length - 1] : faixas.length === 1 && !(faixas[0].max <= 100 && valor > 100) ? faixas[0] : null;
+    const abs = faixas.filter(x => !x.pct);
+    f = abs.length && abs.length < faixas.length ? abs[abs.length - 1]
+      : faixas.length >= 2 ? faixas[faixas.length - 1] : faixas.length === 1 && !faixas[0].pct && !(faixas[0].max <= 100 && valor > 100) ? faixas[0] : null;
     const u = achaUnid(t.slice(nums[1].i));
     unidade = unidade || (u && u !== "%" ? u : "/µL");
   }
@@ -2662,6 +2768,9 @@ function valoresDaLinha(resto, diferencial, rotulo) {
 }
 function faixaDaLinha(resto) {
   const t = " " + semPotencia(resto) + " ";
+  { const lim = /^\s*(?:[^\d<≤:]{1,30}:\s*)?(?:<|≤|at[ée])\s*(\d+(?:[.,]\d+)*)/i.exec(t)
+      || (/proteinur|limitrof|limítrof/i.test(t) ? /(?:<|≤)\s*(\d+(?:[.,]\d+)*)/.exec(t) : null); /* classificação IRIS da RPC */
+    if (lim) return { min: null, max: parseNum(lim[1]) }; }
   RE_FAIXA.lastIndex = 0;
   const m = RE_FAIXA.exec(t);
   RE_FAIXA.lastIndex = 0;
@@ -2671,13 +2780,13 @@ function faixaDaLinha(resto) {
   return null;
 }
 async function linhasDoPdf(pdf, maxPag, signal) {
-  const out = [];
+  const out = [], colunas = [];
   for (let i = 1; i <= Math.min(pdf.numPages, maxPag); i++) {
     if (signal?.aborted) throw { code: "cancelled" };
     const pg = await pdf.getPage(i);
     const tc = await pg.getTextContent();
     const itens = tc.items.filter(it => typeof it.str === "string" && it.str.trim())
-      .map(it => ({ s: it.str, x: it.transform[4], y: it.transform[5], h: Math.abs(it.transform[3]) || 8 }));
+      .map(it => ({ s: it.str, x: it.transform[4], y: it.transform[5], h: Math.abs(it.transform[3]) || 8, w: Math.abs(Number(it.width) || 0) }));
     itens.sort((a, b) => b.y - a.y || a.x - b.x);
     const linhas = [];
     for (const it of itens) {
@@ -2685,9 +2794,24 @@ async function linhasDoPdf(pdf, maxPag, signal) {
       if (l && Math.abs(l.y - it.y) <= Math.max(2, Math.min(l.h, it.h) * 0.5)) l.p.push(it);
       else linhas.push({ y: it.y, h: it.h, p: [it] });
     }
-    for (const l of linhas) out.push(l.p.sort((a, b) => a.x - b.x).map(x => x.s).join(" ").replace(/\s+/g, " ").trim());
+    for (const l of linhas) {
+      const p = l.p.sort((a, b) => a.x - b.x), cel = [];
+      let atual = "";
+      for (let i = 0; i < p.length; i++) {
+        const it = p[i], ant = p[i - 1];
+        if (!ant) { atual = it.s; continue; }
+        const h = Math.max(1, Math.min(it.h, ant.h)), vao = it.x - (ant.x + ant.w);
+        if (ant.w > 0 && vao < h * 0.08) atual += it.s;                                  /* "3" "1" ",0" → "31,0" */
+        else if (ant.w > 0 && vao > Math.max(8, h * 0.9)) { cel.push(atual); atual = it.s; } /* outra coluna */
+        else atual += " " + it.s;
+      }
+      cel.push(atual);
+      const limpas = cel.map(c => c.replace(/\s+/g, " ").trim()).filter(Boolean);
+      if (limpas.length) { out.push(limpas.join(" ")); colunas.push(limpas); }
+    }
   }
-  return out.filter(Boolean);
+  out.colunas = colunas;
+  return out;
 }
 /* rótulos que encerram um campo do cabeçalho quando vários campos estão na mesma linha */
 const PROX = "(?=\\s+(?:requisitante|solicitante|m[ée]dic[oa]|vet\\w*|esp[ée]cie|ra[cç]a|sexo|idade|peso|propriet\\w*|tutor|respons\\w*|cl[ií]nica|data|paciente|animal|nome|crmv|prop\\.?)\\b|\\s*$)";
@@ -2695,10 +2819,74 @@ const RE_CLINICA = new RegExp("(?:cl[ií]nica(?:\\s*vet(?:erin[aá]ria)?)?|hospi
 const RE_VET = new RegExp("(?:m[ée]dic[oa]\\s*vet(?:erin[aá]ri[oa])?|vet(?:erin[aá]ri[oa])?\\s*(?:solicitante|requisitante)|solicitante|requisitante)\\s*\\.*\\s*:\\s*(.+?)" + PROX, "i");
 const RE_VET_RESP = new RegExp("vet(?:erin[aá]ri[oa])?\\s*respons[aá]vel\\s*\\.*\\s*:\\s*(.+?)" + PROX, "i");
 const RE_RACA = new RegExp("\\bra[cç]a\\s*\\.*\\s*:\\s*(.+?)" + PROX, "i");
-function lerLaudoTexto(linhas) {
+/* itens da urinálise (nome no laudo → nome no app) */
+const URINA_NOMES = {
+  "metodo de obtencao": "Método de coleta da urina", "metodo de coleta": "Método de coleta da urina",
+  "volume": "Volume de urina", "cor": "Cor da urina", "aspecto": "Aspecto da urina", "odor": "Odor da urina",
+  "ph": "pH urinário", "densidade": "Densidade urinária", "densidade urinaria": "Densidade urinária",
+  "nitrito": "Nitritos", "nitritos": "Nitritos", "proteina": "Proteínas na urina", "proteinas": "Proteínas na urina",
+  "glicose": "Glicose na urina", "corpos cetonicos": "Corpos cetônicos", "cetonas": "Corpos cetônicos", "cetona": "Corpos cetônicos",
+  "bilirrubina": "Bilirrubina na urina", "urobilinogenio": "Urobilinogênio",
+  "eritrocitos hemoglobina": "Sangue oculto (hemoglobina)", "hemoglobina": "Sangue oculto (hemoglobina)", "sangue oculto": "Sangue oculto (hemoglobina)", "sangue": "Sangue oculto (hemoglobina)",
+  "leucocitos": "Leucócitos na urina", "piocitos": "Leucócitos na urina", "eritrocitos": "Hemácias na urina", "hemacias": "Hemácias na urina",
+  "celulas descamativas": "Células descamativas", "celulas epiteliais": "Células descamativas", "celulas escamosas": "Células descamativas",
+  "celulas de transicao": "Células de transição", "celulas transicionais": "Células de transição",
+  "celulas pelve renal": "Células da pelve renal", "celulas da pelve renal": "Células da pelve renal",
+  "celulas tubular renal": "Células tubulares renais", "celulas tubulares renais": "Células tubulares renais", "celulas renais": "Células tubulares renais",
+  "cristais": "Cristais", "cilindros": "Cilindros", "bacterias": "Bactérias", "bacteriuria": "Bactérias", "muco": "Muco", "filamentos de muco": "Muco",
+  "leveduras": "Leveduras", "fungos": "Leveduras", "espermatozoides": "Espermatozoides", "lipidios": "Gotículas de gordura", "goticulas de gordura": "Gotículas de gordura",
+  "proteina urinaria": "Proteína urinária", "creatinina urinaria": "Creatinina urinária",
+  "relacao proteina creatinina": "Relação proteína/creatinina urinária", "relacao proteina creatinina urinaria": "Relação proteína/creatinina urinária",
+};
+const RE_UNID_G = new RegExp(RE_UNID.source, "gi");
+/* uma linha de tabela já separada em colunas: [resultado, referência...] */
+function valorDeCelulas(cs, rotulo) {
+  /* "2+" com "100 mg/dL" na coluna seguinte: a concentração é do resultado, não referência */
+  if (/^\s*(?:\d\s*\+|\+{1,4}(?!\d))/.test(String(cs[0] || "")) && cs.length > 1 && /^\(?\s*\d+(?:[.,]\d+)?\s*(?:mg\/dl|g\/l|mg\/l|g\/dl|mmol\/l)\s*\)?$/i.test(String(cs[1]).trim()))
+    cs = [String(cs[0]).trim() + " (" + String(cs[1]).replace(/[()]/g, "").trim() + ")"].concat(cs.slice(2));
+  const res = String(cs[0] || "").trim();
+  if (!res) return null;
+  /* "6,5 7,0": dois números na mesma célula; melhor ler pela linha */
+  if (/^[<>≤≥]?\s*\d+(?:[.,]\d+)*\s+\d/.test(res)) return null;
+  /* a coluna de método ("Tira reagente", "Refratômetro") não é referência */
+  const refBruta = cs.slice(1).filter(c => !/\b(m[ée]todo|tira|refrat\w*|reagente|automa\w*)\b/i.test(c)).join(" ").trim();
+  const f = refBruta ? faixaDaLinha(refBruta) : null;
+  let unidade = "";
+  for (const t of [res, refBruta, rotulo]) { const mu = RE_UNID.exec(t || ""); if (mu) { unidade = unidadeBonita(mu[1]); break; } }
+  if (!unidade) { const mc = /(?:\/|\bp(?:or)?\s*\/?)\s*campo\b|(?<![\/\w])ml\b/i.exec(res + " " + refBruta); if (mc) unidade = /campo/i.test(mc[0]) ? "/campo" : "mL"; }
+  /* referência escrita ("Ausente", "Límpido", "0 a +"), sem as unidades */
+  const semUnid = refBruta.replace(RE_UNID_G, " ").replace(/\/\s*campo|\bml\b/gi, " ").trim();
+  if (!unidade) { const mg = /\/\s*(cga|cpa)\b/i.exec(res + " " + refBruta); if (mg) unidade = "/" + mg[1].toLowerCase(); }
+  const semUnid2 = semUnid.replace(/\/\s*(?:cga|cpa)\b|\b(?:por|p)\s*\/?\s*(?:campo|cga|cpa)\b|\b(?:cel|c[ée]lulas)\s*\/\s*campo\b|\b(?:campo|cruzes|unid\w*)\b/gi, " ").replace(/[\s/().,;:]+/g, " ").trim();
+  const refTexto = !f && semUnid2 && (/\p{L}{2,}/u.test(semUnid2) || /\+/.test(semUnid2)) ? (/\p{Ll}/u.test(semUnid) ? semUnid : frase(semUnid)).slice(0, 40) : null;
+  const base = { unidade, refMin: f ? f.min : null, refMax: f ? f.max : null };
+  if (refTexto) base.refTexto = refTexto;
+  /* semiquantitativo ("1+", "++", "2+ (100 mg/dL)"): é texto, não 1 ou 2 */
+  if (/^\d\s*\+|^\+{1,4}(?![\d])/.test(res)) return Object.assign({}, base, { valor: null, texto: res.slice(0, 60), unidade: "" });
+  let m = /^([<>]=?|[≤≥])?\s*(\d+(?:[.,]\d+)*)(?:\s*[^\d\s].*)?$/.exec(res);
+  if (m && !/^[<>≤≥]?\s*\d+(?:[.,]\d+)?\s*(?:[-–]|a\b)\s*\d/.test(res)) {
+    /* referência na mesma célula: "1,030 (1,015 a 1,045)", "30 mg/dL até 10" */
+    if (!f) {
+      const fr = faixaDaLinha(res.replace(/^\s*(?:[<>]=?|[≤≥])?\s*\d+(?:[.,]\d+)*/, ""));
+      if (fr) { base.refMin = fr.min; base.refMax = fr.max; delete base.refTexto; }
+    }
+    if (m[1]) return Object.assign({ valor: null, texto: m[1] + " " + m[2] }, base);
+    const n = parseNum(m[2]);
+    if (n != null) return Object.assign({ valor: n, texto: null }, base);
+  }
+  /* faixa como resultado ("1 - 2" por campo) */
+  m = /^(\d+(?:[.,]\d+)?)\s*(?:[-–]|\ba\b)\s*(\d+(?:[.,]\d+)?)/.exec(res);
+  if (m) return Object.assign({ valor: null, texto: m[1] + " a " + m[2] }, base);
+  /* escrito ("AUSENTE", "LIGEIRAMENTE TURVO", "+--") */
+  return Object.assign({ valor: null, texto: (/\p{Ll}/u.test(res) || !/\p{L}/u.test(res) ? res : frase(res)).slice(0, 60) }, base);
+}
+/* frases de conclusão de laudos de imagem */
+const RE_CONCLUSAO = /\b(sugere\w*|sugestiv\w*|compat[ií]ve\w*|pode indicar|indicativ\w*|pode corresponder)\b/i;
+function lerLaudoTexto(linhas, colunas, inicios) {
   const r = { tipo: "", titulo: "", data: "", clinica: "", veterinario: "", resumo: "", paciente: { nome: "", raca: "", sexo: "", microchip: "", idade: null, nascimento: "" }, valores: [] };
   const vistos = new Set(), obs = [], extras = new Map();
   let secao = "", bloco = null, ultimo = "", vetResp = "", viuUrina = false;
+  const imagem = [];
   const conhecido = k => !!k && (extras.has(k) || nomePorChave().has(k) || D().anMap.has(k));
   const nomeDe = (k, rotulo) => extras.get(k) || D().anMap.get(k)?.nome || nomePorChave().get(k) || bonito(rotulo);
   const chaveBase = rotulo => {
@@ -2711,6 +2899,12 @@ function lerLaudoTexto(linhas) {
     return k;
   };
   const chaveDe = rotulo => {
+    if (secao === "urina") {
+      /* itens próprios da urinálise (Cor, Aspecto, Cristais...) */
+      const nu = norm(rotulo);
+      const nome = URINA_NOMES[nu];
+      if (nome) { const k = chaveAnalito(nome); if (!nomePorChave().has(k)) extras.set(k, nome); return k; }
+    }
     let k = chaveBase(rotulo);
     if (secao === "urina" && k && !CHAVES_URINA.has(k)) {
       /* na urinálise, "Glicose", "Hemácias" etc. são da urina, não do sangue */
@@ -2725,7 +2919,7 @@ function lerLaudoTexto(linhas) {
   };
   const adicionar = (k, rotulo, val) => {
     if (!val || vistos.has(k)) return;
-    if (k === "densidade urinaria") { const d = x => ehNum(x) && x >= 1000 && x < 1100 ? x / 1000 : x; val.valor = d(val.valor); val.refMin = d(val.refMin); val.refMax = d(val.refMax); }
+    if (k === "densidade urinaria") { val.unidade = ""; const d = x => ehNum(x) && x >= 1000 && x < 1100 ? x / 1000 : x; val.valor = d(val.valor); val.refMin = d(val.refMin); val.refMax = d(val.refMax); }
     if (k === "peso") {
       if (!(val.valor > 0)) return;
       if (val.unidade !== "kg" && val.valor > 150) val.valor = val.valor / 1000;
@@ -2739,9 +2933,12 @@ function lerLaudoTexto(linhas) {
   };
   const fecharBloco = () => { if (bloco && bloco.val) adicionar(bloco.k, bloco.rotulo, bloco.val); bloco = null; };
   const datas = [];
-  for (const linha of linhas) {
+  for (const [iLinha, linha] of linhas.entries()) {
+    /* outro arquivo: a seção do anterior não continua */
+    if (iLinha > 0 && inicios && inicios.has(iLinha)) { fecharBloco(); secao = ""; }
     const n = norm(linha);
     if (!n) continue;
+    const cel = Array.isArray(colunas?.[iLinha]) ? colunas[iLinha] : null;
     const temDigito = /\d/.test(linha);
     let m;
     if (!r.data && (m = /(?:data\s*(?:d[aeo]\s*)?(?:coleta|entrada|recebimento|exame)|coletad[oa]\s*em|dt\.?\s*(?:d[aeo]\s*)?(?:coleta|entrada))[^0-9]{0,20}(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})/i.exec(linha))) r.data = dataFlex(m[1]);
@@ -2758,23 +2955,62 @@ function lerLaudoTexto(linhas) {
     if (!r.paciente.microchip && (m = /\b(?:microchip|chip)\s*\.*\s*:?\s*(\d{9,20})/i.exec(linha))) r.paciente.microchip = m[1];
     /* seções: só em linhas de título (sem números) */
     if (!temDigito) {
-      if (/\b(urinalise|urina|eas|sedimentoscopia|exame fisico|exame quimico|relacao proteina|rpc|upc)\b/.test(n)) { secao = "urina"; viuUrina = true; }
+      if (linha.length <= 70 && (!/:/.test(linha) || /^\s*(?:exame|laudo|procedimento|tipo de exame)\s*:/i.test(linha)) && /\b(ultrassonograf\w*|ultrassom|ultra som|ecograf\w*|ecocardiogra\w*|radiograf\w*)\b/.test(n) && /\b(laudo|exame|abdom\w*|toracic\w*|relatorio)\b/.test(n)) secao = "imagem";
+      else if (/\b(urinalise|urina|eas|sedimentoscopia|exame fisico|exame quimico|relacao proteina|rpc|upc)\b/.test(n)) { secao = "urina"; viuUrina = true; }
       else if (/\b(bioquimic\w*|proteina total e fracoes|perfil renal|perfil hepatico|quimica clinica|soro)\b/.test(n)) secao = "bio";
       else if (/\b(hemograma|serie vermelha|eritrograma|serie branca|leucograma)\b/.test(n) && secao !== "bio") secao = "hemo";
     }
-    if (/^(obs|observ\w*|conclus\w*|impressao diagnostica)\b/.test(n) || /\b(repetid[oa] e confirmad[oa]|normais em quantidade)\b/.test(n)) {
-      let t = frase(linha.replace(/^[^:]{0,25}:\s*/, ""));
+    if (secao !== "imagem" && (/^(obs|observ\w*|conclus\w*|impressao diagnostica)\b/.test(n) || /\b(repetid[oa] e confirmad[oa]|normais em quantidade)\b/.test(n))) {
+      /* mantém as maiúsculas do laudo (ex.: "LabVet"); texto todo em maiúsculas vira frase */
+      /* tira o rótulo: "OBS:", "Observações série vermelha:", "OBSERVAÇÕES........" */
+      let t = linha.replace(/^\s*(?:(?:obs[\p{L}.]*|observa\p{L}*|conclus\p{L}*|impress\p{L}*\s+diagn\p{L}*)[^:\d]{0,30}|[^:\d]{1,30})\s*:\s*/iu, "");
+      if (t === linha) t = linha.replace(/^\s*(?:obs\S*|observa\S*|conclus\S*|impress\S*\s+diagn\S*)[\s.:]*/iu, "");
+      t = t.replace(/^[*\s]+/, "").replace(/[.;\s]+$/, "");
+      t = /\p{Ll}/u.test(t) ? t.charAt(0).toUpperCase() + t.slice(1) : frase(t);
       if (/^exame repetido/i.test(t) && ultimo) t = ultimo + ": " + t.charAt(0).toLowerCase() + t.slice(1);
       if (t && t.length <= 160 && !obs.includes(t)) obs.push(t);
+    }
+    /* laudo de imagem: o texto vai para as observações, não vira valor */
+    if (secao === "imagem") {
+      const pz = temDigito ? primeiroNumero(linha) : -1;
+      const kz = pz > 0 ? chaveBase(linha.slice(0, pz).replace(/[\s.:;<>≤≥-]+$/, "").trim()) : "";
+      if (!(kz && conhecido(kz))) { imagem.push(linha); continue; }
+      /* peso e sinais vitais aparecem no cabeçalho do laudo de imagem: não encerram a seção */
+      /* só exame de laboratório encerra o laudo de imagem (medidas de eco/ultrassom e peso não) */
+      if (CHAVES_HEMO.has(kz) || CHAVES_BIO.has(kz) || CHAVES_URINA.has(kz) || /na urina$/.test(kz)) secao = "";
+    }
+    /* referência da relação proteína/creatinina na interpretação: "< 0,2 - Não proteinúrico" */
+    { const mi = /^\s*[<＜]/.test(linha) && /\bnao proteinur/.test(n) ? /(\d+(?:[.,]\d+)?)/.exec(linha) : null; /* sem acento: o "ã" pode vir decomposto */
+      if (mi) { const rpc = r.valores.find(v => chaveAnalito(v.nome) === "relacao proteina creatinina urinaria"); if (rpc && rpc.refMin == null && rpc.refMax == null) rpc.refMax = parseNum(mi[1]); continue; } }
+    /* urinálise em tabela: o resultado e a referência vêm em colunas separadas */
+    if (secao === "urina" && cel && cel.length >= 2) {
+      /* "Cor: AMARELO     Aspecto: LÍMPIDO": cada rótulo conhecido começa outro item */
+      const partes = [];
+      for (const c0 of cel) {
+        const mdp = /^(.*?[^\s.])[\s.]*:\s*(.*)$/.exec(c0);
+        const rot0 = (mdp ? mdp[1] : c0.replace(/[\s.:]+$/, "")).replace(/^[*\s]+/, "").trim();
+        const ehRot = (!partes.length || mdp || !/\d/.test(c0)) && rot0.length <= 40 && !/^(resultados?|referencias?|metodo|material)$/.test(norm(rot0)) && conhecido(chaveDe(rot0));
+        if (ehRot && (!partes.length || mdp || partes[partes.length - 1].length >= 2)) partes.push(mdp && mdp[2].trim() ? [rot0, mdp[2].trim()] : [rot0]);
+        else if (partes.length) partes[partes.length - 1].push(c0);
+        else break;
+      }
+      const lidos = partes.filter(cs => cs.length >= 2).map(cs => ({ k: chaveDe(cs[0]), rot: cs[0], val: valorDeCelulas(cs.slice(1), cs[0]) })).filter(x => x.val);
+      if (lidos.length && partes.every(cs => cs.length >= 2)) {
+        fecharBloco();
+        for (const x of lidos) adicionar(x.k, x.rot, x.val);
+        if (lidos.length === partes.length) continue;
+      }
     }
     let pos = primeiroNumero(linha);
     if (pos >= 0) {
       /* "Glicose <40": o sinal pertence ao resultado, não ao nome */
       const sinal = /[<>≤≥]\s*$/.exec(linha.slice(0, pos));
       if (sinal) pos = sinal.index;
-      const rot = linha.slice(0, pos).replace(/[\s.:;-]+$/, "").trim();
+      let rot = linha.slice(0, pos).replace(/[\s.:;-]+$/, "").trim();
+      let resto = linha.slice(pos);
+      { const cr = /^(.*?\S)[\s.:]*(\+{1,4})\s*\(?\s*$/.exec(linha.slice(0, pos));
+        if (cr && conhecido(chaveDe(cr[1].replace(/[\s.:;-]+$/, "").trim()))) { rot = cr[1].replace(/[\s.:;-]+$/, "").trim(); resto = linha.slice(cr[1].length).replace(/^[\s.:]+/, ""); } }
       const nr = norm(rot);
-      const resto = linha.slice(pos);
       if (/^(resultados?|valor obtido|valor encontrado)$/.test(nr)) {
         if (bloco && bloco.val) fecharBloco();
         else if (bloco) bloco.val = valoresDaLinha(resto, false, "");
@@ -2787,9 +3023,32 @@ function lerLaudoTexto(linhas) {
       }
       if (!nr) continue;
       const k = chaveDe(rot);
-      if (conhecido(k)) { fecharBloco(); adicionar(k, rot, valoresDaLinha(resto, DIFERENCIAL.has(k), rot)); }
+      if (conhecido(k)) {
+        fecharBloco();
+        /* semiquantitativo ("2+", "1+ (100 mg/dL)"): é texto, não 2 ou 1 */
+        const sq = /^((?:[1-4]\s*\+|\+{1,4})(?![\d+])(?:\s*\([^)]*\))?)\s*(.*)$/.exec(resto.trim());
+        /* resultado em faixa na urinálise ("4 - 8 /campo  até 5"): é texto, não 4 */
+        const fxu = secao === "urina" && /^(\d+(?:[.,]\d+)?)\s*(?:[-–]|a)\s*(\d+(?:[.,]\d+)?)(?!\s*%)(.*)$/.exec(resto.trim());
+        if (sq) {
+          let txt = sq[1].replace(/\s+/g, " "), ref = sq[2].trim();
+          /* a concentração logo depois das cruzes é do resultado: "2+ 100 mg/dL Negativo" */
+          const conc = /^\(?\s*(\d+(?:[.,]\d+)?\s*(?:mg\/dl|g\/l|mg\/l|g\/dl|mmol\/l|cel\/µl|\/µl))\s*\)?\s*(.*)$/i.exec(ref);
+          if (conc && !/\(/.test(txt)) { txt += " (" + conc[1] + ")"; ref = conc[2]; }
+          const val = { valor: null, texto: txt, unidade: "", refMin: null, refMax: null };
+          if (/\p{L}/u.test(ref)) val.refTexto = frase(ref).slice(0, 40);
+          adicionar(k, rot, val);
+        } else if (fxu && conhecido(k)) {
+          const val = { valor: null, texto: fxu[1] + " a " + fxu[2], unidade: /campo/i.test(fxu[3]) ? "/campo" : "", refMin: null, refMax: null };
+          const f = faixaDaLinha(fxu[3].replace(/^\s*(?:p(?:or)?\s*)?\/?\s*campo\b/i, ""));
+          if (f) { val.refMin = f.min; val.refMax = f.max; }
+          adicionar(k, rot, val);
+        } else adicionar(k, rot, valoresDaLinha(resto, DIFERENCIAL.has(k), rot));
+      }
       continue;
     }
+    /* "Proteínas ++ Negativo": cruzes sem número */
+    const cz = /^(.{2,40}?)[\s.:]+(\+-+|\+{1,4})(?:\s+(\p{L}.{0,38}))?$/u.exec(linha);
+    if (cz) { const k = chaveDe(cz[1]); if (conhecido(k)) { fecharBloco(); const val = { valor: null, texto: cz[2], unidade: "", refMin: null, refMax: null }; if (cz[3]) val.refTexto = frase(cz[3].trim()); adicionar(k, cz[1], val); continue; } }
     const dois = /^(.{2,60}?)\s*\.*\s*:\s*(.{1,40})$/.exec(linha);
     if (dois) { const k = chaveDe(dois[1]); if (conhecido(k)) { fecharBloco(); adicionar(k, dois[1], { valor: null, texto: frase(dois[2]), unidade: "", refMin: null, refMax: null }); continue; } }
     const kt = chaveDe(linha.replace(/[.:]+$/, ""));
@@ -2812,18 +3071,50 @@ function lerLaudoTexto(linhas) {
   else if (temH || temB) r.tipo = "sangue";
   else if (/\b(urinalise|urina tipo|eas|sedimentoscopia)\b/.test(tudo)) r.tipo = "urina";
   else if (/\b(parasitologico|coproparasitologico|fezes)\b/.test(tudo)) r.tipo = "fezes";
-  else if (/\b(ecocardiograma|eletrocardiograma|pressao arterial|holter)\b/.test(tudo)) r.tipo = "coracao";
-  else if (/\b(ultrassonografia|ultrassom|ultra som|ecografia)\b/.test(tudo)) r.tipo = "ultrassom";
-  else if (/\b(radiografia|raio x)\b/.test(tudo)) r.tipo = "raiox";
+  else if (/\b(ecocardiogra\w*|eletrocardiogra\w*|pressao arterial|holter)\b/.test(tudo)) r.tipo = "coracao";
+  else if (/\b(ultrassonograf\w*|ultrassom|ultra som|ecograf\w*)\b/.test(tudo)) r.tipo = "ultrassom";
+  else if (/\b(radiograf\w*|raio x)\b/.test(tudo)) r.tipo = "raiox";
   r.titulo = r.tipo === "urina" ? (ks.includes("relacao proteina creatinina urinaria") && ks.length <= 3 ? "Relação proteína/creatinina urinária" : "Urinálise (EAS)")
     : temH && temB ? "Hemograma + bioquímico" : temH ? "Hemograma completo" : temB ? "Perfil bioquímico"
-    : r.tipo === "coracao" ? (/\becocardiograma\b/.test(tudo) ? "Ecocardiograma" : /\beletrocardiograma\b/.test(tudo) ? "Eletrocardiograma" : "")
+    : r.tipo === "coracao" ? (/\becocardiogra/.test(tudo) ? "Ecocardiograma" : /\beletrocardiogra/.test(tudo) ? "Eletrocardiograma" : "")
     : r.tipo === "ultrassom" ? (/\babdom/.test(tudo) ? "Ultrassom abdominal" : "Ultrassom") : r.tipo === "raiox" ? "Radiografia" : r.tipo === "fezes" ? "Parasitológico de fezes" : "";
-  r.resumo = obs.length ? obs.join(". ").replace(/\.\./g, ".").slice(0, 600) + "." : "";
+  /* laudo de imagem junto: as conclusões ("Sugere-se...", "pode indicar...") com o achado de antes */
+  if (imagem.length) {
+    const tit = (imagem.find(l => /ultrass|ecograf|radiograf|ecocardio/i.test(l) && !/\d/.test(l)) || "Ultrassom");
+    const uteis = imagem.filter(l => {
+      const nl = norm(l);
+      if (!/\d/.test(l) && l.length <= 70 && !/:/.test(l) && /\b(ultrass\w*|ultra som|ecograf\w*|radiograf\w*|ecocardio\w*|laudo)\b/.test(nl)) return false; /* título */
+      if (/^\s*(paciente|data|exame|tutor|propriet\w*|esp[ée]cie|ra[çc]a|sexo|idade|peso|requisitante|solicitante)\b[^:]{0,20}:/i.test(l)) return false; /* cabeçalho */
+      if (/crmv|m[ée]dic[oa]\s+veterin|p[áa]gina\s+\d|www\.|@|\btel\b|telefone|este laudo|assinad/i.test(l)) return false; /* rodapé e assinatura */
+      return true;
+    });
+    /* linha que não termina em vírgula ou conector e a seguinte começa com maiúscula: outra frase */
+    let junto = "";
+    uteis.forEach((l, i) => {
+      const t = l.replace(/\s+/g, " ").trim();
+      if (!t) return;
+      if (junto && !/[.!?,;:]$/.test(junto) && !/\b(e|ou|de|da|do|com|em|a|o|que)$/i.test(junto) && /^[–—-]?\s*\p{Lu}/u.test(t)) junto += ".";
+      junto += (junto ? " " : "") + t;
+    });
+    const frases = junto.split(/(?<=[.!?])\s+(?=[–—-]?\s*\p{Lu})/u);
+    const achados = [];
+    const limpa = x => x.replace(/^[–—-]\s*/, "").replace(/^(?:conclus\S*|impress\S*\s+diagn\S*|obs\S*|observa\S*)\s*:\s*/i, "").trim();
+    frases.forEach((f, i) => {
+      if (!RE_CONCLUSAO.test(f)) return;
+      const prev = i > 0 ? frases[i - 1] : "";
+      /* conclusão curta ("- sugere nefropatia") vem com o achado de antes, se ele não for outra conclusão */
+      const parte = (/^[–—-]/.test(f) || f.length < 70) && prev && !RE_CONCLUSAO.test(prev) && !/^(?:conclus|impress)/i.test(f.trim()) ? limpa(prev) + " " + limpa(f) : limpa(f);
+      if (!achados.some(a => a.includes(parte) || parte.includes(a))) achados.push(parte);
+      else { const j = achados.findIndex(a => parte.includes(a)); if (j >= 0) achados[j] = parte; }
+    });
+    const nomeImg = /radiograf/i.test(tit) ? "Raio-X" : /ecocardio/i.test(tit) ? "Ecocardiograma" : "Ultrassom" + (/abdom/i.test(tit) ? " abdominal" : "");
+    if (achados.length) obs.push(nomeImg + ": " + achados.map(a => a.replace(/[.\s]+$/, "")).join(". "));
+  }
+  r.resumo = obs.length ? obs.map(o => o.replace(/[.;\s]+$/, "")).join(". ").slice(0, 1100) + "." : "";
   return r;
 }
 async function extrairSemIA(fontes, signal, status) {
-  const linhas = [], notas = [];
+  const linhas = [], colunas = [], notas = [], inicios = new Set();
   for (const f of fontes) {
     if (signal.aborted) throw { code: "cancelled" };
     if (tipoArquivo(f.tipo, f.nome) !== "pdf") { notas.push(f.nome + ": fotos ainda precisam ser preenchidas à mão."); continue; }
@@ -2834,11 +3125,11 @@ async function extrairSemIA(fontes, signal, status) {
     try {
       const ls = await linhasDoPdf(pdf, 20, signal);
       if (ls.join("").replace(/\s/g, "").length < 80) notas.push(f.nome + " parece ser uma imagem escaneada; preencha à mão.");
-      else linhas.push(...ls);
+      else { inicios.add(linhas.length); linhas.push(...ls); colunas.push(...(ls.colunas || ls.map(x => [x]))); }
     } finally { try { pdf.destroy(); } catch (e) { /* nada */ } }
   }
   if (!linhas.length) throw { code: "semtexto", notas };
-  return { dados: lerLaudoTexto(linhas), notas, semIA: true };
+  return { dados: lerLaudoTexto(linhas, colunas, inicios), notas, semIA: true };
 }
 const SEM_CLAUDE = new Set(["not_granted", "sampling_disabled", "not_declared", "capability_disabled", "capability_removed"]);
 
@@ -2858,6 +3149,7 @@ function erroIA(e) {
     case "prompt_too_large": return "O laudo é grande demais para ler de uma vez. Envie só as páginas com os resultados.";
     case "refused": case "empty_completion": return "O Claude não conseguiu ler este laudo. Preencha à mão.";
     case "invalid_json": return "A resposta veio num formato inesperado. Tente de novo.";
+    case "ia_chave": case "ia_sem_credito": case "ia_servidor": case "ia_falhou": case "offline": return e.mensagem || "A leitura com o Claude falhou. Tente de novo.";
     default: return "A leitura falhou por um problema de conexão. Tente de novo.";
   }
 }
@@ -2902,12 +3194,18 @@ async function prepararImagem(blob, tipo, lim) {
 async function extrairComClaude(fontes, linhasAtuais, signal, status) {
   const lim = S.semImagens ? null : (S.sampleLim?.images || null);
   const maxImgs = lim ? Math.max(0, lim.maxCount | 0) : 0;
-  const partes = [], imagens = [], notas = [];
+  const partes = [], imagens = [], notas = [], pdfs = [];
   for (const [i, f] of fontes.entries()) {
     if (signal.aborted) throw { code: "cancelled" };
     const tipo = tipoArquivo(f.tipo, f.nome);
     status("Abrindo " + f.nome + "…");
-    if (tipo === "pdf") {
+    if (tipo === "pdf" && CAP.sample?.documentos) {
+      /* o PDF vai inteiro: o Claude enxerga a página como ela é (colunas, tabelas) */
+      let bytes;
+      try { bytes = await f.bytes(); } catch (e) { if (e?.code === "fetch") throw e; notas.push("Não consegui abrir " + f.nome + "."); continue; }
+      pdfs.push({ nome: f.nome, base64: bytesParaBase64(bytes) });
+      partes.push("=== Arquivo " + (i + 1) + ": " + f.nome + " (PDF anexado acima, documento " + pdfs.length + ") ===");
+    } else if (tipo === "pdf") {
       let pdf;
       try { pdf = await abrirPdf(await f.bytes()); }
       catch (e) { if (e?.code === "fetch") throw e; notas.push("Não consegui abrir " + f.nome + "."); continue; }
@@ -2937,7 +3235,7 @@ async function extrairComClaude(fontes, linhasAtuais, signal, status) {
     }
   }
   if (signal.aborted) throw { code: "cancelled" };
-  if (!imagens.length && !partes.some(p => p.length > 200)) throw { code: "nada", notas };
+  if (!imagens.length && !pdfs.length && !partes.some(p => p.length > 200)) throw { code: "nada", notas };
   const conhecidos = [...new Set([...D().analitos.map(a => a.nome), ...linhasAtuais.map(r => r.nome).filter(Boolean), ...ANALITOS.map(a => a[0])])].slice(0, 160);
   const prompt = [
     "Você vai ler o laudo de um exame veterinário de uma cachorra e devolver os dados em JSON.",
@@ -2959,6 +3257,9 @@ async function extrairComClaude(fontes, linhasAtuais, signal, status) {
     "- No leucograma, use as contagens absolutas (/µL) e a referência absoluta quando existirem, e ignore os percentuais relativos.",
     '- No hemograma, a proteína total medida no plasma se chama "Proteína plasmática total". No bioquímico (soro), use "Proteínas totais", "Albumina" e "Globulinas".',
     '- Resultados de pesquisa (ex.: "Pesquisa de hematozoários: negativa") vão em "texto".',
+    '- Resultado em faixa (ex.: "1 - 2" leucócitos por campo) vai em "texto" como "1 a 2", com "valor": null.',
+    '- "refTexto": referência escrita quando ela não é numérica (ex.: "Ausente", "Límpido", "0 a +"); null quando a referência for numérica ou não houver.',
+    '- Na urinálise, leia todos os itens do exame físico, químico e do sedimento (cor, aspecto, densidade, pH, proteínas, glicose, corpos cetônicos, bilirrubina, sangue oculto, leucócitos, hemácias, células, cristais, cilindros, bactérias).',
     "- Quando o analito for um destes, use exatamente este nome: " + conhecidos.join("; ") + ".",
     "- Não invente nada que não esteja no laudo.",
     "",
@@ -2970,6 +3271,7 @@ async function extrairComClaude(fontes, linhasAtuais, signal, status) {
   /* cada leitura é um pedido seu: nunca reaproveita uma resposta guardada */
   const opts = { signal, modelTier: "default", cache: false, onText: () => status("Organizando os valores…") };
   if (imagens.length) opts.images = imagens;
+  if (pdfs.length) opts.pdfs = pdfs;
   const bruto = await CAP.sample.json(prompt, opts);
   return { dados: limparExtracao(bruto), notas };
 }
@@ -2992,7 +3294,11 @@ function limparExtracao(r) {
     const valor = numLinha(v.valor, nome);
     const texto = str(v.texto, 60) || (valor == null ? str(v.valor, 60) : "");
     if (valor == null && !texto) return null;
-    return { nome, valor, texto: valor == null ? texto : "", unidade: str(v.unidade, 24), refMin: numLinha(v.refMin, nome), refMax: numLinha(v.refMax, nome) };
+    const out = { nome, valor, texto: valor == null ? texto : "", unidade: str(v.unidade, 24), refMin: numLinha(v.refMin, nome), refMax: numLinha(v.refMax, nome) };
+    if (chaveAnalito(nome) === "densidade urinaria") { const d = x => ehNum(x) && x >= 1000 && x < 1100 ? x / 1000 : x; out.valor = d(out.valor); out.refMin = d(out.refMin); out.refMax = d(out.refMax); out.unidade = ""; }
+    const rt = str(v.refTexto, 40);
+    if (rt && out.refMin == null && out.refMax == null) out.refTexto = rt;
+    return out;
   }).filter(Boolean);
   const pc = o.paciente && typeof o.paciente === "object" && !Array.isArray(o.paciente) ? o.paciente : {};
   const id = pc.idade && typeof pc.idade === "object" ? pc.idade : null;
@@ -3032,52 +3338,121 @@ async function preencherFichaComLaudo(campos) {
   Object.assign(base, campos, { atualizadoEm: agora() });
   await dbSet("config", "pet", base);
 }
-function aplicarExtracao(F, r) {
+function bytesParaBase64(bytes) {
+  const u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let s = "";
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+/* conferencia: a segunda leitura (o Claude) é comparada com o que a primeira preencheu */
+/* texto para comparar: sem acento e maiúsculas, mas mantendo sinais ("+", "<", "-") e números */
+function normComparar(t) {
+  return String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[–—]/g, "-").replace(/(\d),(\d)/g, "$1.$2").replace(/\s+/g, " ").replace(/(\d)\s*(?:\ba\b|\bate\b)\s*(\d)/g, "$1-$2")
+    .replace(/\s*([<>≤≥+\-])\s*/g, "$1").replace(/[.;:!]+$/, "")
+    .replace(/(\p{L}{3,})s\b/gu, "$1").trim();
+}
+/* conf (só na conferência com o Claude): { preenchidas: linhas que a leitura automática preencheu agora,
+   obsAntes / obsDepois: observações antes e depois da leitura automática } */
+function aplicarExtracao(F, r, conf) {
+  const conferencia = !!conf;
   const encher = (k, v) => { if (!v) return; if (!F.tocado.has(k) || !String(F[k] || "").trim()) F[k] = v; };
-  encher("tipo", r.tipo); encher("titulo", r.titulo); encher("data", r.data);
-  encher("clinica", r.clinica); encher("veterinario", r.veterinario);
-  /* observações que você escreveu ficam; a conclusão do laudo vai para o fim */
-  if (r.resumo && F.observacoes.trim() && !F.observacoes.includes(r.resumo)) F.observacoes = F.observacoes.trim() + "\n" + r.resumo;
-  else encher("observacoes", r.resumo);
-  let novos = 0, completados = 0, iguais = 0;
-  const diferentes = [], avisos = [], nestaLeitura = new Map();
+  const difCab = [];
+  if (conferencia) {
+    /* cabeçalho: o Claude só preenche o que está vazio; data e tipo diferentes aparecem para conferir */
+    for (const [k, rot] of [["tipo", "Tipo"], ["titulo", ""], ["data", "Data"], ["clinica", ""], ["veterinario", ""]]) {
+      const atual = String(F[k] || "").trim();
+      if (!r[k]) continue;
+      const padrao = conf.novo && !F.tocado.has(k) && conf.cab0 && String(conf.cab0[k] || "").trim() === atual;
+      if (!atual || padrao) { F[k] = r[k]; continue; }
+      if (rot && normComparar(atual) !== normComparar(r[k])) {
+        const mostra = x => k === "data" ? fmtData(x) : k === "tipo" ? (TIPO[x]?.nome || x) : x;
+        difCab.push(rot + ": o Claude leu " + mostra(r[k]) + ", no formulário está " + mostra(atual) + ".");
+      }
+    }
+    /* observações: a conclusão do Claude troca a da leitura automática (não junta as duas) */
+    if (r.resumo && F.observacoes === conf.obsDepois) {
+      let base = String(conf.obsAntes || "");
+      if (F.resumoIA && base.includes(F.resumoIA)) base = base.replace(F.resumoIA, "").replace(/\n{2,}/g, "\n");
+      base = base.trim();
+      F.observacoes = base && !base.includes(r.resumo) ? base + "\n" + r.resumo : base || r.resumo;
+      F.resumoIA = r.resumo;
+    }
+  } else {
+    encher("tipo", r.tipo); encher("titulo", r.titulo); encher("data", r.data);
+    encher("clinica", r.clinica); encher("veterinario", r.veterinario);
+    /* observações que você escreveu ficam; a conclusão do laudo vai para o fim */
+    if (r.resumo && F.observacoes.trim() && !F.observacoes.includes(r.resumo)) F.observacoes = F.observacoes.trim() + "\n" + r.resumo;
+    else encher("observacoes", r.resumo);
+  }
+  let novos = 0, completados = 0, iguais = 0, conferidasAuto = 0;
+  const diferentes = [], avisos = [], preenchidas = new Set(), confirmadas = new Set(), difChaves = [];
+  /* o mesmo item duas vezes no laudo (ex.: % e /µL; tira e sedimento): um por item, a contagem absoluta primeiro */
+  const porChave = new Map();
   for (const v of r.valores) {
     const k = chaveAnalito(v.nome);
+    const ja = porChave.get(k);
+    if (!ja) { porChave.set(k, v); continue; }
+    const uNova = normUnid(v.unidade), uFica = normUnid(ja.unidade);
+    if (uNova === "/µl" && uFica === "%") porChave.set(k, v);
+    else if (!(uFica === "/µl" && uNova === "%")) avisos.push(v.nome + " aparece mais de uma vez no laudo; ficou o primeiro valor.");
+  }
+  for (const [k, v] of porChave) {
     const valor = v.valor != null ? numInput(v.valor) : (v.texto || "");
-    const repetida = nestaLeitura.get(k);
-    if (repetida) {
-      /* o mesmo item duas vezes no laudo (ex.: % e /µL): fica a contagem absoluta */
-      const uNova = normUnid(v.unidade), uFica = normUnid(repetida.unidade);
-      if (uNova === "/µl" && uFica === "%") {
-        repetida.valor = valor; repetida.unidade = v.unidade || ""; repetida.refMin = numInput(v.refMin); repetida.refMax = numInput(v.refMax);
-      } else if (!(uFica === "/µl" && uNova === "%")) {
-        avisos.push(v.nome + " aparece mais de uma vez no laudo; ficou o primeiro valor.");
-      }
-      continue;
-    }
     const linha = F.valores.find(x => chaveAnalito(x.nome) === k);
     if (linha) {
       if (!linha.valor.trim() && valor) {
         linha.valor = valor;
-        if (!linha.unidade.trim()) linha.unidade = v.unidade || "";
+        /* linha de Modelo (sem referência): a unidade do laudo vale mais que a padrão ("mil/µL" e não "/µL") */
+        if (v.unidade && !linha.refMin.trim() && !linha.refMax.trim()) linha.unidade = v.unidade;
+        else if (!linha.unidade.trim()) linha.unidade = v.unidade || "";
         if (!linha.refMin.trim() && v.refMin != null) linha.refMin = numInput(v.refMin);
         if (!linha.refMax.trim() && v.refMax != null) linha.refMax = numInput(v.refMax);
+        if (!String(linha.refTexto || "").trim() && v.refTexto) { linha.refTexto = v.refTexto; linha.nomeOrig = linha.nome; }
         completados++;
-        nestaLeitura.set(k, linha);
+        preenchidas.add(linha);
       } else if (linha.valor.trim()) {
         iguais++;
+        const daLeitura = conferencia && conf.preenchidas && conf.preenchidas.has(linha);
+        if (daLeitura) conferidasAuto++;
         const atual = numLinha(linha.valor, linha.nome);
-        if (v.valor != null && atual != null && Math.abs(atual - v.valor) > 1e-9) diferentes.push(linha.nome + ": no laudo " + fmtNum(v.valor) + ", no formulário " + fmtNum(atual) + ".");
-        else if (v.valor == null && atual == null && v.texto && norm(v.texto) !== norm(linha.valor)) diferentes.push(linha.nome + ": no laudo “" + v.texto + "”, no formulário “" + linha.valor.trim() + "”.");
+        const quem = !conferencia ? ["no laudo", "no formulário"] : daLeitura ? ["o Claude leu", "a leitura automática deu"] : ["o Claude leu", "no formulário está"];
+        const lido = v.valor != null ? fmtNum(v.valor) : "“" + (v.texto || "") + "”", noForm = atual != null ? fmtNum(atual) : "“" + linha.valor.trim() + "”";
+        let dif = false;
+        /* "279 mil/µL" e "279.000 /µL" são o mesmo valor: o lido pelo Claude vai para a unidade da linha */
+        const eL = escalaUnid(linha.unidade), eV = escalaUnid(v.unidade);
+        const duasUnid = !!(linha.unidade.trim() && v.unidade);
+        const fator = duasUnid && eL.base === eV.base ? eV.fator / eL.fator : 1;
+        const refOk = !duasUnid || eL.base === eV.base; /* unidades sem conversão: a referência do Claude não serve */
+        const naUnid = x => x == null ? null : x * fator;
+        if (v.valor != null && atual != null) dif = Math.abs(atual - naUnid(v.valor)) > 1e-9 * Math.max(1, Math.abs(atual));
+        else if (v.valor == null && atual == null) dif = !!v.texto && normComparar(v.texto) !== normComparar(linha.valor);
+        else dif = conferencia && !(v.valor == null && !v.texto); /* um leu número e o outro texto */
+        if (dif) { diferentes.push(linha.nome + ": " + quem[0] + " " + lido + ", " + quem[1] + " " + noForm + "."); difChaves.push({ k, nome: linha.nome, lido, noForm }); }
+        else confirmadas.add(k);
+        if (!dif && conferencia) {
+          /* o valor bate: confere também a referência */
+          const mn = numLinha(linha.refMin, linha.nome), mx = numLinha(linha.refMax, linha.nome);
+          const difRef = (a, b) => a != null && b != null && Math.abs(a - b) > 1e-9 * Math.max(1, Math.abs(b));
+          const rMin = naUnid(v.refMin), rMax = naUnid(v.refMax);
+          if (refOk && (difRef(rMin, mn) || difRef(rMax, mx))) {
+            diferentes.push(linha.nome + ": a referência que o Claude leu é " + refTxt({ refMin: rMin, refMax: rMax }).replace("Ref. ", "") + ", " + (daLeitura ? "a da leitura automática " : "a do formulário ") + refTxt({ refMin: mn, refMax: mx }).replace("Ref. ", "") + ".");
+          } else if (refOk && (rMin != null || rMax != null) && mn == null && mx == null) {
+            if (rMin != null) linha.refMin = numInput(rMin);
+            if (rMax != null) linha.refMax = numInput(rMax);
+          }
+          if (v.refTexto && !String(linha.refTexto || "").trim() && mn == null && mx == null) { linha.refTexto = v.refTexto; linha.nomeOrig = linha.nome; }
+        }
       }
       continue;
     }
-    const nova = { nome: v.nome, valor, unidade: v.unidade || "", refMin: numInput(v.refMin), refMax: numInput(v.refMax) };
+    if (!valor) continue;
+    const nova = { nome: v.nome, valor, unidade: v.unidade || "", refMin: numInput(v.refMin), refMax: numInput(v.refMax), refTexto: v.refTexto || "", nomeOrig: v.nome };
     F.valores.push(nova);
-    nestaLeitura.set(k, nova);
+    preenchidas.add(nova);
     novos++;
   }
-  return { novos, completados, iguais, diferentes, avisos };
+  return { novos, completados, iguais, diferentes, avisos, difCab, preenchidas, conferidasAuto, confirmadas, difChaves };
 }
 async function apagarExame(id, antes) {
   const e = S.exames.find(x => x.id === id);
@@ -4480,6 +4855,55 @@ function visitanteCardHTML(e) {
   h += '<div class="row-btns"><button type="button" class="btn primary sm" data-act="drive-sincronizar" data-fk="dr-sync"' + (v.carregando ? " disabled" : "") + ">" + I.sync + (v.carregando ? "Atualizando…" : "Atualizar agora") + "</button></div>";
   return h;
 }
+/* ---------- leitura com IA no app do dono ---------- */
+function iaCardHTML() {
+  const ia = DRIVE?.ia;
+  if (!ia) return "";
+  const lig = ia.configurada();
+  return '<div class="drive-sub"><span class="lbl">Leitura com IA (conferência)</span><p class="fhint">' +
+    (lig ? "Ligada neste aparelho. Ao anexar o PDF de um exame, o app lê sozinho e o Claude confere a leitura, mostrando o que não bater."
+      : "Opcional. Com uma chave da API do Claude, o app lê o PDF e o Claude confere a leitura, mostrando o que não bater. A chave fica só neste aparelho. Custa centavos de dólar por exame, pagos à Anthropic.") +
+    '</p><div class="row-btns"><button type="button" class="btn ghost sm" data-act="ia-config" data-fk="dr-ia">' + I.sparkle + (lig ? "Testar ou remover a chave" : "Ligar a leitura com IA") + "</button></div></div>";
+}
+function abrirConfigIA() {
+  const ia = DRIVE?.ia;
+  if (!ia) return;
+  const lig = ia.configurada();
+  const corpo = lig
+    ? '<p>A leitura com IA está ligada neste aparelho, com o modelo ' + esc(ia.modelo) + '. A chave fica guardada só aqui.</p><p class="form-err" role="alert" hidden></p><p class="fhint" data-slot="ia-st"></p>'
+    : '<form class="form" novalidate><p>Para o Claude conferir a leitura dos laudos, crie uma chave da API (uma vez só):</p><ol class="passos"><li>Entre em <b>console.anthropic.com</b> com a sua conta.</li><li>Em <b>Billing</b>, coloque créditos (o mínimo já dá para muitos exames: cada conferência custa centavos de dólar).</li><li>Em <b>API keys</b>, crie uma chave chamada “Prontuário” e copie (começa com <b>sk-ant-</b>).</li></ol>' +
+      '<div class="field"><label for="ia-k">Chave da API do Claude</label><input id="ia-k" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..."></div>' +
+      '<p class="fhint">A chave fica guardada só neste aparelho. Ela nunca vai para o Google Drive nem para os links de compartilhamento. Para tirar, é só voltar aqui.</p><p class="form-err" role="alert" hidden></p><p class="fhint" data-slot="ia-st"></p></form>';
+  const rodape = '<span class="spacer"></span>' + (lig ? '<button type="button" class="btn danger-ghost" data-f="remover">Remover a chave</button><button type="button" class="btn primary" data-f="testar">Testar a chave</button>'
+    : '<button type="button" class="btn ghost" data-f="fechar">Cancelar</button><button type="button" class="btn primary" data-f="salvar">Salvar e testar</button>');
+  const j = abrirJanela({ titulo: "Leitura com IA", tam: "sm", corpo, rodape });
+  const st = t => { const el = j.sheet.querySelector('[data-slot="ia-st"]'); if (el) el.textContent = t || ""; };
+  j.sheet.querySelector("form")?.addEventListener("submit", ev => ev.preventDefault());
+  j.sheet.addEventListener("click", async ev => {
+    const b = ev.target.closest("[data-f]");
+    if (!b || b.disabled) return;
+    esconderErro(j);
+    if (b.dataset.f === "remover") { ia.apagarChave(); toast("Chave da IA removida deste aparelho."); j.fechar(true); setTimeout(() => location.reload(), 400); return; }
+    if (b.dataset.f === "salvar") {
+      try { ia.definirChave(j.sheet.querySelector("#ia-k").value); }
+      catch (e) { mostrarErro(j, e?.mensagem || "Essa chave não parece certa."); return; }
+    }
+    if (b.dataset.f === "salvar" || b.dataset.f === "testar") {
+      b.disabled = true; st("Conferindo a chave com a Anthropic…");
+      try {
+        const r = await ia.testar();
+        st("");
+        toast("Leitura com IA ligada (" + r.modelo + ").");
+        j.fechar(true);
+        setTimeout(() => location.reload(), 400); /* o formulário passa a usar a IA */
+      } catch (e) {
+        b.disabled = false; st("");
+        if (e?.code === "ia_chave" && b.dataset.f === "salvar") ia.apagarChave();
+        mostrarErro(j, e?.code === "ia_chave" ? "A Anthropic não aceitou essa chave. Confira se copiou a chave inteira, ou crie outra em console.anthropic.com → API keys." : e?.mensagem || "Não consegui conferir a chave agora.");
+      }
+    }
+  });
+}
 function driveCardHTML() {
   const e = estadoDrive();
   if (!e) return '<div class="drive-card"><p class="drive-msg">O Google Drive não está disponível nesta versão do app.</p></div>';
@@ -4516,6 +4940,7 @@ function driveCardHTML() {
   const chip = (k, txt) => '<button type="button" class="chipbtn" data-act="drive-metodo" data-m="' + k + '" data-fk="dr-m-' + k + '" aria-pressed="' + (m === k) + '">' + (m === k ? I.check : "") + esc(txt) + "</button>";
   h += '<div class="drive-sub"><span class="lbl">Como entrar no Google</span><div class="row-btns">' + chip("janela", "Janela") + chip("redirecionar", "Redirecionar") + "</div>" +
     '<p class="fhint">' + (m === "redirecionar" ? "O app vai para a página do Google e volta sozinho depois." : "Abre uma janelinha do Google por cima do app. Se ela não abrir, use Redirecionar.") + "</p></div>";
+  h += iaCardHTML();
   h += instalacaoHTML();
   /* só quando os dados já estão no Drive (senão apagar perderia tudo de vez) */
   if (e.contaConhecida && ehNum(e.ultimaSync)) h += apagarAparelhoHTML();
@@ -4581,6 +5006,7 @@ Object.assign(ACOES, {
   "drive-apagar-aparelho": () => apagarAparelho(),
   "drive-leitor": () => conectarLeitor(),
   "link-novo": () => abrirNovoLink(),
+  "ia-config": () => abrirConfigIA(),
   "link-ver": el => mostrarLink(el.dataset.id),
   "link-desligar": el => desligarLinkUI(el.dataset.id),
   "aviso-apagado-ok": () => { avisoApagado = false; agendarRender(); },
@@ -4632,6 +5058,8 @@ function iniciar() {
   }, () => {});
   c.use("downloads").then(d => { CAP.downloads = d || null; render(); }, () => {});
 }
+/* funções puras da leitura de laudos (para conferir a leitura de um PDF no console) */
+window.__leitor = { lerLaudoTexto, linhasDoPdf, abrirPdf };
 iniciar();
 })();
 </script>

@@ -1959,6 +1959,8 @@
   }
 
   function ligarGatilhos() {
+    // um link de compartilhamento aberto nesta mesma aba: recarrega para abrir como visitante
+    ouvir(G, "hashchange", () => { try { if (/^#v=/.test(G.location.hash)) G.location.reload(); } catch (e) { /* ok */ } });
     ouvir(G, "online", () => { carregarGis(); if (podeSincronizar()) sincronizar(); else atualizarEstado(); });
     ouvir(G, "offline", () => atualizarEstado());
     ouvir(G.document, "visibilitychange", () => {
@@ -2830,6 +2832,163 @@
     try { if (relogio && typeof relogio.unref === "function") relogio.unref(); } catch (e) { /* ok */ }
   }
 
+  // ---------------------------------------------------------------------------
+  // Leitura com IA (Claude) no aparelho do dono: confere a leitura automática.
+  // A chave da API fica SÓ neste aparelho (localStorage); nunca vai para o Drive
+  // nem para os links. Usa o SDK oficial da Anthropic (empacotado em vendor/).
+  // ---------------------------------------------------------------------------
+  const CHAVE_IA = "prontuario.chaveIA";
+  const MODELO_IA = "claude-opus-5-5";
+  const SDK_IA = String(CFG.anthropicSdk || "./vendor/anthropic/sdk-0.135.0.mjs");
+  const lerChaveIA = () => { const k = String(ls.ler(CHAVE_IA) || "").trim(); return /^sk-ant-[A-Za-z0-9_-]{20,}$/.test(k) ? k : ""; };
+  const iaDisponivel = () => !VISITA && !leitorAgora() && !!lerChaveIA();
+  let sdkIA = null;
+  function carregarSdkIA() {
+    if (!sdkIA) sdkIA = import(SDK_IA).then((m) => m.default || m.Anthropic).catch((e) => { sdkIA = null; throw e; });
+    return sdkIA;
+  }
+  async function clienteIA() {
+    const Anthropic = await carregarSdkIA();
+    const op = { apiKey: lerChaveIA(), dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 300000 };
+    if (CFG.iaBase) op.baseURL = String(CFG.iaBase); // só nos testes (Google falso)
+    return { Anthropic, client: new Anthropic(op) };
+  }
+
+  // Formato que a resposta precisa seguir (saída estruturada)
+  const NUM_OU_NULO = { anyOf: [{ type: "number" }, { type: "null" }] };
+  const TXT_OU_NULO = { anyOf: [{ type: "string" }, { type: "null" }] };
+  const ESQUEMA_LAUDO = {
+    type: "object", additionalProperties: false,
+    required: ["tipo", "titulo", "data", "clinica", "veterinario", "resumo", "paciente", "valores"],
+    properties: {
+      tipo: { type: "string", enum: ["sangue", "urina", "fezes", "ultrassom", "coracao", "raiox", "outro"] },
+      titulo: TXT_OU_NULO, data: TXT_OU_NULO, clinica: TXT_OU_NULO, veterinario: TXT_OU_NULO, resumo: TXT_OU_NULO,
+      paciente: { anyOf: [{ type: "null" }, {
+        type: "object", additionalProperties: false,
+        required: ["nome", "raca", "sexo", "microchip", "idade", "nascimento"],
+        properties: {
+          nome: TXT_OU_NULO, raca: TXT_OU_NULO, sexo: TXT_OU_NULO, microchip: TXT_OU_NULO, nascimento: TXT_OU_NULO,
+          idade: { anyOf: [{ type: "null" }, { type: "object", additionalProperties: false, required: ["anos", "meses", "dias"], properties: { anos: NUM_OU_NULO, meses: NUM_OU_NULO, dias: NUM_OU_NULO } }] }
+        }
+      }] },
+      valores: { type: "array", items: {
+        type: "object", additionalProperties: false,
+        required: ["nome", "valor", "texto", "unidade", "refMin", "refMax", "refTexto"],
+        properties: { nome: { type: "string" }, valor: NUM_OU_NULO, texto: TXT_OU_NULO, unidade: TXT_OU_NULO, refMin: NUM_OU_NULO, refMax: NUM_OU_NULO, refTexto: TXT_OU_NULO }
+      } }
+    }
+  };
+
+  function blobParaBase64(blob) {
+    return blob.arrayBuffer().then((buf) => {
+      const u = new Uint8Array(buf);
+      let s = "";
+      for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+      return G.btoa(s);
+    });
+  }
+  function jsonDoTexto(t) {
+    const s = String(t || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+    const i = s.indexOf("{"), f = s.lastIndexOf("}");
+    if (i < 0 || f <= i) throw erro("invalid_json", "A resposta veio num formato inesperado.");
+    try { return JSON.parse(s.slice(i, f + 1)); } catch (e) { throw erro("invalid_json", "A resposta veio num formato inesperado."); }
+  }
+  // Erros da API em códigos que o app conhece
+  function erroDaIA(e, Anthropic) {
+    if (e && e.code) return e;
+    const st = e && typeof e.status === "number" ? e.status : 0;
+    const msg = String((e && e.message) || "");
+    if (Anthropic && e instanceof Anthropic.APIUserAbortError) return erro("cancelled", "Leitura cancelada.");
+    if (st === 401 || st === 403) return erro("ia_chave", "A chave da IA não foi aceita. Confira em Google Drive → Leitura com IA.");
+    if (st === 429) return erro("rate_limited", "Muitas leituras seguidas. Espere um pouco e tente de novo.");
+    if (st === 413 || /too large|too long|maximum.*(?:pages|tokens)/i.test(msg)) return erro("prompt_too_large", "O laudo é grande demais para ler de uma vez.");
+    if (/credit balance|billing|insufficient/i.test(msg)) return erro("ia_sem_credito", "A conta da Anthropic está sem créditos. Coloque créditos em console.anthropic.com → Billing.");
+    if (st >= 500 || st === 529) return erro("ia_servidor", "O Claude está sobrecarregado agora. Tente de novo em instantes.");
+    // sem internet (ou o SDK nem carregou): mensagem própria, não a da sincronização do Drive
+    if ((Anthropic && e instanceof Anthropic.APIConnectionError) || (!Anthropic && !st)) return erro("offline", "Sem internet: o Claude não conseguiu conferir agora. Tente de novo quando a conexão voltar.");
+    return erro("ia_falhou", "A leitura com o Claude falhou" + (st ? " (erro " + st + ")" : "") + ". Tente de novo.");
+  }
+
+  // Mesmo formato do Claude do app: json(prompt, {images, pdfs, signal})
+  async function lerComIA(prompt, opcoes) {
+    if (!iaDisponivel()) throw erro("ia_chave", "Configure a chave da IA em Google Drive → Leitura com IA.");
+    const op = opcoes || {};
+    let Anthropic = null;
+    try {
+      const c = await clienteIA();
+      Anthropic = c.Anthropic;
+      const conteudo = [];
+      // PDFs vão inteiros: o Claude enxerga a página como ela é (tabelas, colunas)
+      for (const d of op.pdfs || []) {
+        if (d && typeof d.base64 === "string" && d.base64) conteudo.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: d.base64 }, title: String(d.nome || "laudo.pdf").slice(0, 200) });
+      }
+      for (const img of op.images || []) {
+        if (!img || typeof img.arrayBuffer !== "function") continue;
+        const tipo = ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(img.type) ? img.type : "image/jpeg";
+        conteudo.push({ type: "image", source: { type: "base64", media_type: tipo, data: await blobParaBase64(img) } });
+      }
+      conteudo.push({ type: "text", text: String(prompt || "") });
+      const base = {
+        model: MODELO_IA,
+        max_tokens: 32000,
+        messages: [{ role: "user", content: conteudo }],
+        // se o filtro de segurança recusar, o próprio servidor tenta com o modelo recomendado
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default"
+      };
+      const pedir = async (comFormato) => {
+        const params = Object.assign({}, base, {
+          output_config: comFormato ? { effort: "high", format: { type: "json_schema", schema: ESQUEMA_LAUDO } } : { effort: "high" }
+        });
+        const stream = c.client.beta.messages.stream(params, { signal: op.signal });
+        if (typeof op.onText === "function") stream.on("text", () => { try { op.onText(); } catch (x) { /* ok */ } });
+        return stream.finalMessage();
+      };
+      let resp;
+      try { resp = await pedir(true); }
+      catch (e) {
+        // modelo/conta sem saída estruturada: pede o JSON só pelo texto
+        if (e && e.status === 400 && /output_config|format|schema/i.test(String(e.message || ""))) resp = await pedir(false);
+        else throw e;
+      }
+      if (resp.stop_reason === "refusal") throw erro("refused", "O Claude não conseguiu ler este laudo.");
+      if (resp.stop_reason === "max_tokens") throw erro("prompt_too_large", "O laudo é grande demais para ler de uma vez.");
+      const texto = (resp.content || []).filter((b) => b && b.type === "text").map((b) => b.text).join("");
+      if (!texto.trim()) throw erro("empty_completion", "O Claude não devolveu nada.");
+      return jsonDoTexto(texto);
+    } catch (e) {
+      throw erroDaIA(e, Anthropic);
+    }
+  }
+
+  const controleIA = {
+    configurada: () => !!lerChaveIA(),
+    disponivel: iaDisponivel,
+    modelo: MODELO_IA,
+    definirChave(k) {
+      const v = String(k || "").trim();
+      if (!/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(v)) throw erro("ia_chave", "Essa não parece uma chave da API do Claude (começa com sk-ant-).");
+      ls.gravar(CHAVE_IA, v);
+    },
+    apagarChave() { ls.apagar(CHAVE_IA); },
+    // confere a chave sem gastar: só consulta o modelo
+    async testar() {
+      if (!lerChaveIA()) throw erro("ia_chave", "Nenhuma chave guardada.");
+      let Anthropic = null;
+      try {
+        const c = await clienteIA();
+        Anthropic = c.Anthropic;
+        const m = await c.client.models.retrieve(MODELO_IA);
+        return { ok: true, modelo: (m && (m.display_name || m.id)) || MODELO_IA };
+      } catch (e) { throw erroDaIA(e, Anthropic); }
+    }
+  };
+  const capacidadeIA = {
+    documentos: true, // aceita o PDF inteiro
+    limits: async () => ({ images: { maxCount: 20, mediaTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"], maxInputBytes: 4 * 1024 * 1024 } }),
+    json: lerComIA
+  };
+
   const controle = {
     estado,
     on: aoEvento,
@@ -2847,7 +3006,8 @@
     links: infoLinks,
     criarLink,
     desligarLink,
-    publicarLinks: (op) => publicarVitrine(op)
+    publicarLinks: (op) => publicarVitrine(op),
+    ia: controleIA
   };
 
   const capacidades = {
@@ -2917,7 +3077,9 @@
 
   G.claude = {
     modo: "drive",
-    use: (nome) => Promise.resolve(Object.prototype.hasOwnProperty.call(capacidades, nome) ? capacidades[nome] : null),
+    // "sample" (leitura com IA) só existe com a chave da IA guardada neste aparelho
+    use: (nome) => Promise.resolve(nome === "sample" ? (iaDisponivel() ? capacidadeIA : null)
+      : Object.prototype.hasOwnProperty.call(capacidades, nome) ? capacidades[nome] : null),
     blobUrl: urlDoBlob,
     blobGet: pegarBlob,
     drive: controle

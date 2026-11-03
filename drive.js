@@ -588,13 +588,26 @@
 
   // Bytes do anexo: do aparelho, ou baixa do Drive e guarda
   async function pegarBlob(id) {
+    return (await pegarBlobGuardando(id)).blob;
+  }
+  // o mesmo arquivo pedido de novo enquanto baixa (tela + segundo plano): um download só
+  const baixandoAgora = new Map();
+  function pegarBlobGuardando(id) {
     id = String(id || "");
+    const ja = baixandoAgora.get(id);
+    if (ja) return ja;
+    const p = pegarBlobUmaVez(id).finally(() => baixandoAgora.delete(id));
+    baixandoAgora.set(id, p);
+    return p;
+  }
+  // { blob, guardado }: guardado=false quando baixou mas não coube no aparelho
+  async function pegarBlobUmaVez(id) {
     if (!ID_OK.test(id)) throw erro("fetch", "Arquivo não encontrado.");
-    if (VISITA) return blobDaVisita(id);
+    if (VISITA) return { blob: await blobDaVisita(id), guardado: true };
     await prontoPromessa;
     let rec = null;
     try { rec = await operar("blobs", "readonly", (s) => s.get(id)); } catch (e) { /* tenta o Drive */ }
-    if (rec && rec.blob) return comTipo(rec.blob, rec.tipo);
+    if (rec && rec.blob) return { blob: comTipo(rec.blob, rec.tipo), guardado: true };
     if (!CONFIGURADO || !tokenValido()) throw erro("fetch", "Este arquivo ainda não está neste aparelho. Conecte o Google Drive.");
     try {
       let resp = null;
@@ -619,10 +632,11 @@
       const bruto = resp.blob;
       const tipo = String(resp.tipo || bruto.type || "").split(";")[0].trim() || "application/octet-stream";
       const blob = comTipo(bruto, tipo);
+      let guardado = true;
       try {
         await operar("blobs", "readwrite", (s) => s.put({ id, blob, tipo, nome: "", tamanho: blob.size, enviado: 1 }, id));
-      } catch (e) { /* só não fica guardado */ }
-      return blob;
+      } catch (e) { guardado = false; /* só não fica guardado (aparelho sem espaço) */ }
+      return { blob, guardado };
     } catch (e) {
       if (e && e.code === "fetch") throw e; // já tem a mensagem certa
       throw erro("fetch", e && e.code === "offline" ? MSG.offline
@@ -1939,11 +1953,57 @@
       resolverPrimeiroPull();
       atualizarEstado();
       avisarAbas(Array.from(colsMudadas), blobsMexidos, true);
+      // sincronizou bem: aproveita o acesso válido para trazer os PDFs que faltam neste aparelho
+      if (!erroAtual && podeSincronizar()) setTimeout(() => { baixarAnexosQueFaltam(); }, 1500);
     }
   }
 
   const podeSincronizar = () => CONFIGURADO && tokenValido();
   const visivel = () => !G.document || G.document.visibilityState !== "hidden";
+
+  // PDFs e fotos que este aparelho ainda não tem (enviados por outro aparelho): baixa em segundo plano depois de
+  // sincronizar, um por vez e dos exames mais novos para os mais antigos. Assim eles abrem depois mesmo sem
+  // internet ou com o acesso ao Google vencido (o acesso dura cerca de 1 hora).
+  const LIMITE_BAIXAR = 200 * 1024 * 1024; // por rodada
+  let baixandoAnexos = false;
+  let semEspacoParaAnexos = false; // não coube no aparelho: para de baixar nesta sessão (não gasta dados à toa)
+  async function baixarAnexosQueFaltam() {
+    if (baixandoAnexos || semEspacoParaAnexos || VISITA || !podeSincronizar()) return;
+    const nav = G.navigator;
+    if (nav && nav.connection && nav.connection.saveData) return; // "economia de dados" ligada no celular
+    baixandoAnexos = true;
+    try {
+      const lista = [];
+      for (const r of docs.values()) {
+        if (r.apagado || !r.dados) continue;
+        const quando = String(r.dados.data || r.dados.inicio || "");
+        if (Array.isArray(r.dados.arquivos)) for (const a of r.dados.arquivos) if (a && typeof a.id === "string") lista.push([quando, a.id, Number(a.tamanho) || 0]);
+        if (typeof r.dados.fotoId === "string") lista.push(["9999", r.dados.fotoId, 0]);
+      }
+      lista.sort((a, b) => b[0].localeCompare(a[0]));
+      let total = 0;
+      const vistos = new Set();
+      for (const [, id, tam] of lista) {
+        if (vistos.has(id) || !ID_OK.test(id)) continue;
+        vistos.add(id);
+        if (!podeSincronizar() || (nav && nav.onLine === false)) break;
+        if (!meta.anexos[id] || tam > MAX_ANEXO) continue; // ainda não está no Drive: não fica listando de novo
+        let rec = null;
+        try { rec = await operar("blobs", "readonly", (s) => s.get(id)); } catch (e) { /* tenta baixar */ }
+        if (rec && rec.blob) continue;
+        if (total + tam > LIMITE_BAIXAR) break;
+        try {
+          const r = await pegarBlobGuardando(id);
+          total += r.blob.size;
+          if (!r.guardado) { semEspacoParaAnexos = true; break; }
+        } catch (e) { if (e && e.code === "fetch" && /expirou|internet|conex/i.test(String(e.mensagem || ""))) break; }
+      }
+    } catch (e) {
+      avisarConsole("não consegui baixar os anexos em segundo plano", e);
+    } finally {
+      baixandoAnexos = false;
+    }
+  }
 
   // 1,5 s depois da última escrita local
   function agendarSync() {

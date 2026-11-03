@@ -2157,34 +2157,76 @@ async function abrirArquivo(f) {
     else if (b.dataset.f === "zout") { zoom = Math.max(0.5, +(zoom / 1.25).toFixed(3)); desenhar(true).catch(() => {}); }
     else if (b.dataset.f === "dl") baixarArquivo(f);
   });
-  if (tipo === "img") {
-    let src;
-    if (f.file) src = url = URL.createObjectURL(f.file);
-    else if (MODO_DRIVE) {
-      let b = null;
-      try { b = await pegarBlob(f.id); } catch (e) { /* mostra o aviso abaixo */ }
-      if (j.fechada) return;
-      if (!b) { palco.innerHTML = '<p class="vw-msg">Não consegui carregar esta imagem. Se ela foi enviada por outro aparelho, conecte o Google Drive e tente de novo.</p>'; return; }
-      src = url = URL.createObjectURL(b);
-    } else src = "/_blob/" + encodeURIComponent(f.id);
-    palco.innerHTML = '<img class="vw-img" alt="' + esc(f.nome || "") + '" src="' + esc(src) + '">';
-    palco.querySelector("img").addEventListener("error", () => { palco.innerHTML = '<p class="vw-msg">Não consegui carregar esta imagem.</p>'; });
-    desenhar();
-  } else if (tipo === "pdf") {
-    try {
-      const bytes = f.file ? new Uint8Array(await f.file.arrayBuffer()) : await bytesGuardados(f.id);
-      pdf = await abrirPdf(bytes);
-      if (j.fechada) { pdf.destroy(); return; }
-      await desenhar();
-    } catch (e) {
-      if (j.fechada) return;
-      /* no celular: o arquivo pode não estar aqui ainda; "Baixar" falharia igual */
-      if (MODO_DRIVE && e?.code === "fetch") palco.innerHTML = '<p class="vw-msg">' + esc(e.mensagem || "Não consegui carregar este PDF. Se ele foi enviado por outro aparelho, conecte o Google Drive e tente de novo.") + "</p>";
-      else palco.innerHTML = '<p class="vw-msg">Não consegui mostrar este PDF aqui.' + (podeBaixar ? " Use “Baixar” para abrir no seu aparelho." : "") + "</p>";
+  /* o arquivo não está neste aparelho e o acesso ao Google venceu (dura cerca de 1 hora):
+     um toque reconecta (o toque é necessário para a janela do Google abrir) e o arquivo abre em seguida */
+  const semAcesso = e => {
+    const d = estadoDrive();
+    return MODO_DRIVE && e?.code === "fetch" && !!d && d.configurado && !d.conectado && d.papel !== "visitante";
+  };
+  const pedirConexao = (msg) => {
+    palco.innerHTML = '<div class="vw-msg"><p>' + esc(msg) + '</p><p><button type="button" class="btn primary" data-f="conectar">' + I.cloud + "Conectar o Google Drive e abrir</button></p></div>";
+    palco.querySelector('[data-f="conectar"]').addEventListener("click", ev => {
+      ev.currentTarget.disabled = true;
+      /* se o login do Google recarregar a página, o app abre este arquivo de novo quando voltar */
+      if (f.id) lembrarReabrir(f);
+      let p;
+      try { p = DRIVE.conectar(); } catch (er) { p = Promise.reject(er); }
+      Promise.resolve(p).then(() => {
+        /* login pela página do Google (redirecionar): a página vai sair; o lembrete fica para reabrir na volta */
+        if (!estadoDrive()?.conectado) {
+          if (!j.fechada) palco.innerHTML = '<p class="vw-msg">Abrindo o login do Google…</p>';
+          return;
+        }
+        esquecerReabrir();
+        atualizarDrive();
+        if (j.fechada) return;
+        palco.innerHTML = '<p class="vw-msg">' + (tipo === "pdf" ? "Abrindo o PDF…" : "Abrindo…") + "</p>";
+        carregar(true);
+      }, er => {
+        esquecerReabrir();
+        atualizarDrive();
+        if (j.fechada) return;
+        const cancelou = ["declined", "cancelado", "popup_closed", "popup_closed_by_user"].includes(er?.code);
+        pedirConexao(cancelou ? "O login do Google foi fechado. Toque de novo para conectar e abrir o arquivo." : (er?.mensagem || "Não deu para conectar ao Google Drive. Tente de novo."));
+      });
+    });
+  };
+  const carregar = async (depoisDeConectar) => {
+    if (tipo === "img") {
+      let src;
+      if (f.file) src = url = URL.createObjectURL(f.file);
+      else if (MODO_DRIVE) {
+        let b = null, falha = null;
+        try { b = await pegarBlob(f.id); } catch (e) { falha = e; }
+        if (j.fechada) return;
+        if (!b) {
+          if (!depoisDeConectar && semAcesso(falha)) { pedirConexao("Esta foto ainda não está neste aparelho. Para abrir, o app precisa buscar no seu Google Drive."); return; }
+          palco.innerHTML = '<p class="vw-msg">' + esc(falha?.mensagem || "Não consegui carregar esta imagem. Se ela foi enviada por outro aparelho, conecte o Google Drive e tente de novo.") + "</p>";
+          return;
+        }
+        src = url = URL.createObjectURL(b);
+      } else src = "/_blob/" + encodeURIComponent(f.id);
+      palco.innerHTML = '<img class="vw-img" alt="' + esc(f.nome || "") + '" src="' + esc(src) + '">';
+      palco.querySelector("img").addEventListener("error", () => { palco.innerHTML = '<p class="vw-msg">Não consegui carregar esta imagem.</p>'; });
+      desenhar();
+    } else if (tipo === "pdf") {
+      try {
+        const bytes = f.file ? new Uint8Array(await f.file.arrayBuffer()) : await bytesGuardados(f.id);
+        pdf = await abrirPdf(bytes);
+        if (j.fechada) { pdf.destroy(); return; }
+        await desenhar();
+      } catch (e) {
+        if (j.fechada) return;
+        if (!depoisDeConectar && semAcesso(e)) { pedirConexao("Este PDF ainda não está neste aparelho. Para abrir, o app precisa buscar no seu Google Drive."); return; }
+        /* no celular: o arquivo pode não estar aqui ainda; "Baixar" falharia igual */
+        if (MODO_DRIVE && e?.code === "fetch") palco.innerHTML = '<p class="vw-msg">' + esc(e.mensagem || "Não consegui carregar este PDF. Se ele foi enviado por outro aparelho, conecte o Google Drive e tente de novo.") + "</p>";
+        else palco.innerHTML = '<p class="vw-msg">Não consegui mostrar este PDF aqui.' + (podeBaixar ? " Use “Baixar” para abrir no seu aparelho." : "") + "</p>";
+      }
+    } else {
+      palco.innerHTML = '<p class="vw-msg">Este tipo de arquivo não pode ser mostrado aqui.</p>';
     }
-  } else {
-    palco.innerHTML = '<p class="vw-msg">Este tipo de arquivo não pode ser mostrado aqui.</p>';
-  }
+  };
+  await carregar(false);
 }
 async function desenharPdf(palco, pdf, cssW, cancelado, trocar) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -5079,6 +5121,31 @@ function iniciar() {
     aoMudarCap.forEach(f => { try { f(); } catch (e) { /* janela já fechada */ } });
   }, () => {});
   c.use("downloads").then(d => { CAP.downloads = d || null; render(); }, () => {});
+  if (MODO_DRIVE) reabrirDepoisDoLogin();
+}
+/* "Conectar e abrir" que voltou do login do Google recarregando a página: abre o arquivo que estava sendo aberto */
+const CHAVE_REABRIR = "prontuario.reabrir";
+function lembrarReabrir(f) {
+  try { sessionStorage.setItem(CHAVE_REABRIR, JSON.stringify({ id: f.id, nome: f.nome, tipo: f.tipo, ate: Date.now() + 5 * 60000 })); } catch (e) { /* só não reabre sozinho */ }
+}
+function esquecerReabrir() { try { sessionStorage.removeItem(CHAVE_REABRIR); } catch (e) { /* ok */ } }
+async function reabrirDepoisDoLogin() {
+  let f = null;
+  try { f = JSON.parse(sessionStorage.getItem(CHAVE_REABRIR) || "null"); } catch (e) { f = null; }
+  if (!f || typeof f !== "object" || !idOk(f.id) || !(Number(f.ate) > Date.now())) { esquecerReabrir(); return; }
+  /* espera o botão "Baixar" ficar disponível (CAP.downloads chega logo depois do início) */
+  try { const d = await window.claude?.use?.("downloads"); if (d && !CAP.downloads) CAP.downloads = d; } catch (e) { /* sem Baixar */ }
+  /* espera o login voltar e o Drive ficar conectado (até 20 s) */
+  for (let i = 0; i < 40; i++) {
+    const d = estadoDrive();
+    if (d && d.conectado) {
+      esquecerReabrir();
+      abrirArquivo({ id: f.id, nome: String(f.nome || "Arquivo"), tipo: String(f.tipo || "") });
+      return;
+    }
+    await sleep(500);
+  }
+  esquecerReabrir();
 }
 /* funções puras da leitura de laudos (para conferir a leitura de um PDF no console) */
 window.__leitor = { lerLaudoTexto, linhasDoPdf, abrirPdf };

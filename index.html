@@ -806,8 +806,12 @@ function norm(s) {
   return String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 function normUnid(u) {
-  return String(u ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "").replace(/μ/g, "µ").replace(/×/g, "x")
-    .replace(/mm3|µ3/g, "µl").replace(/\/ul$/, "/µl").replace(/mcg/g, "µg").replace(/^ug/, "µg").replace(/^ui\//, "u/");
+  const n = String(u ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "").replace(/μ/g, "µ").replace(/×/g, "x")
+    /* "U.I./L" é o mesmo que "UI/L" */
+    .replace(/(^|\/)u\.i\.?(?=\/)/, "$1ui");
+  /* volume das hemácias (VCM): "u³", "µ³" e "µm³" são o mesmo que fL (sem barra: não é "por µL") */
+  if (/^(?:u|µ|µm|um)3$/.test(n)) return "fl";
+  return n.replace(/mm3|µ3/g, "µl").replace(/\/ul$/, "/µl").replace(/mcg/g, "µg").replace(/^ug/, "µg").replace(/^ui\//, "u/");
 }
 /* Unidades que medem a mesma coisa em escalas diferentes (ex.: 279 x10³/µL = 279.000 /µL). */
 function escalaUnid(u) {
